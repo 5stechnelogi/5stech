@@ -155,11 +155,18 @@
   .promo h3{font-size:21px; margin-bottom:9px; line-height:1.2; color:var(--text);}
   .promo .code{font-size:12px; color:var(--amber); font-weight:600; margin-bottom:18px; letter-spacing:.03em;}
 
-  .catstrip{display:flex; gap:24px; overflow-x:auto; padding-bottom:8px;}
-  .catitem{display:flex; flex-direction:column; align-items:center; gap:11px; flex-shrink:0; cursor:pointer; width:98px;}
-  .catitem .hex{width:80px; height:80px; background:var(--surface2); border:1px solid var(--line); font-size:31px; transition:.2s; box-shadow:var(--shadow-sm);}
-  .catitem:hover .hex{border-color:var(--amber); background:var(--amber-dim); transform:translateY(-4px) scale(1.06); box-shadow:var(--shadow-md);}
-  .catitem span{font-size:12px; font-weight:600; text-align:center;}
+  .catstrip{display:flex; flex-wrap:wrap; gap:28px; justify-content:center; padding-bottom:8px;}
+  .catitem{display:flex; flex-direction:column; align-items:center; gap:11px; flex-shrink:0; cursor:pointer; width:98px; animation:catFloat 3.4s ease-in-out infinite;}
+  .catitem:nth-child(2n){ animation-delay:.3s; }
+  .catitem:nth-child(3n){ animation-delay:.6s; }
+  .catitem:nth-child(4n){ animation-delay:.9s; }
+  .catitem:nth-child(5n){ animation-delay:1.2s; }
+  @keyframes catFloat{ 0%,100%{ transform:translateY(0); } 50%{ transform:translateY(-6px); } }
+  .catitem .hex{width:80px; height:80px; background:var(--surface2); border:1px solid var(--line); font-size:31px; transition:.25s; box-shadow:var(--shadow-sm);}
+  .catitem:hover{ animation-play-state:paused; }
+  .catitem:hover .hex{border-color:var(--amber); background:var(--amber-dim); transform:translateY(-6px) scale(1.1) rotate(-4deg); box-shadow:var(--shadow-md);}
+  .catitem span{font-size:12px; font-weight:600; text-align:center; transition:.2s;}
+  .catitem:hover span{color:var(--amber);}
 
   .newsletter{background:linear-gradient(180deg,var(--surface),#f6f8fa); border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:56px 24px; text-align:center;}
   .newsletter h2{font-size:25px; margin-bottom:9px;}
@@ -167,6 +174,11 @@
   .nl-form{display:flex; max-width:420px; margin:0 auto; gap:10px;}
   .nl-form input{flex:1; background:var(--surface); border:1px solid var(--line); border-radius:6px; padding:12px 14px; color:var(--text); font-size:13px; outline:none;}
   .nl-form input:focus{border-color:var(--steel);}
+  .partners{background:linear-gradient(180deg,var(--surface),#f6f8fa); border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:40px 24px; text-align:center;}
+  .partners h2{font-size:18px; letter-spacing:.08em; color:var(--muted); margin-bottom:26px;}
+  .partners-row{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:40px; max-width:1100px; margin:0 auto;}
+  .partner-logo{height:80px; display:flex; align-items:center;}
+  .partner-logo img{height:100%; width:auto; max-width:220px; object-fit:contain;}
 
   footer{padding:52px 24px 26px; border-top:1px solid var(--line);}
   .foot-grid{display:grid; grid-template-columns:1.4fr 1fr 1fr 1fr; gap:32px; margin-bottom:40px;}
@@ -176,7 +188,10 @@
   .foot-bottom{display:flex; justify-content:space-between; align-items:center; padding-top:24px; border-top:1px solid var(--line); font-size:12px; color:var(--muted); flex-wrap:wrap; gap:10px;}
 
   .pd-img{height:230px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:80px; margin-bottom:18px; overflow:hidden;}
-  .pd-img img{width:100%; height:100%; object-fit:cover;}
+  .pd-img img{width:100%; height:100%; object-fit:cover; cursor:zoom-in;}
+  .lightbox-overlay{position:fixed; inset:0; background:rgba(0,0,0,.86); z-index:9999; display:flex; align-items:center; justify-content:center; padding:24px; cursor:zoom-out;}
+  .lightbox-overlay img{max-width:100%; max-height:100%; object-fit:contain; border-radius:8px; box-shadow:0 20px 60px rgba(0,0,0,.5);}
+  .lightbox-close{position:absolute; top:18px; right:22px; background:rgba(255,255,255,.12); color:#fff; border:none; width:40px; height:40px; border-radius:50%; font-size:20px; cursor:pointer; display:flex; align-items:center; justify-content:center;}
   .toast{position:fixed; bottom:26px; left:50%; transform:translateX(-50%); background:var(--text); color:#fff; padding:13px 24px; border-radius:9px; font-size:13.5px; z-index:200; font-weight:500; box-shadow:var(--shadow-lg); animation:fadeUp .2s ease both;}
 
   /* cart */
@@ -329,7 +344,16 @@ const ADMIN_PASS = '5s2563';
 let DATA = null;
 let CART = [];
 let VIEW = { page:'home', category:null, product:null, cartOpen:false, searchTerm:'', searchResults:null, searchOpen:false };
-let ADMIN = { open:false, authed:false, tab:'genel', editingProduct:null, custView:'active' };
+let LIGHTBOX_IMG = null;
+function openLightbox(url){ LIGHTBOX_IMG = url; render(); }
+function closeLightbox(){ LIGHTBOX_IMG = null; render(); }
+function lightboxHtml(){
+  return `<div class="lightbox-overlay" onclick="if(event.target===this) closeLightbox()">
+    <button class="lightbox-close" onclick="closeLightbox()">✕</button>
+    <img src="${esc(LIGHTBOX_IMG)}" onclick="closeLightbox()">
+  </div>`;
+}
+let ADMIN = { open:false, authed:false, tab:'genel', editingProduct:null, custView:'active', reportView:'monthly' };
 const CUSTOMER_KEY = 'kdr-customer-v1';
 let CUSTOMER = null;
 let ACCOUNT = { open:false, step:'start', tab:'profil' };
@@ -375,8 +399,10 @@ function defaultData(){
   }
   return {
     siteName: '5S Tech',
+    logo: { image:'', size:40 },
+    partners: [],
     announcement: "Kurulum Kampanyası! Kamera sistemlerinde %50'ye varan indirim ve ücretsiz kargo, kod: GUVEN123",
-    hero: { title:'GÜVENLİĞİN YENİ NESİL ADRESİ', subtitle:'Kamera sistemleri, kayıt cihazları, sunucular ve yangın alarm çözümleri; profesyonel montaj desteğiyle hızlı teslimat.', discount:'20', buttonText:'Şimdi Alışveriş Yap', images:[] },
+    hero: { title:'GÜVENLİĞİN YENİ NESİL ADRESİ', subtitle:'Kamera sistemleri, kayıt cihazları, sunucular ve yangın alarm çözümleri; profesyonel montaj desteğiyle hızlı teslimat.', discount:'%20', discountLabel:'İNDİRİM', buttonText:'Şimdi Alışveriş Yap', images:[] },
     promos: [
       { title:'IP KAMERALARDA %20 İNDİRİM FIRSATI', code:'GUVEN123 promosyon kodunu kullan', buttonText:'Alışverişe Başla', category:'kamera', image:'' },
       { title:'NVR / DVR KAYIT CİHAZLARINDA FIRSAT', code:'', buttonText:'Göz At', category:'kayit', image:'' }
@@ -410,6 +436,10 @@ async function loadData(){
     else { DATA = defaultData(); await saveData(); }
   }catch(e){ DATA = defaultData(); }
   if(DATA.hero && !DATA.hero.images){ DATA.hero.images = DATA.hero.image ? [DATA.hero.image] : []; }
+  if(DATA.hero && /^[0-9]+$/.test((DATA.hero.discount||'').trim())){ DATA.hero.discount = '%' + DATA.hero.discount.trim(); }
+  if(DATA.hero && !DATA.hero.discountLabel){ DATA.hero.discountLabel = 'İNDİRİM'; }
+  if(!DATA.logo){ DATA.logo = { image:'', size:40 }; }
+  if(!DATA.partners){ DATA.partners = []; }
   try{
     const cres = await storageGet(CART_KEY, false);
     CART = (cres && cres.value) ? JSON.parse(cres.value) : [];
@@ -654,6 +684,13 @@ function cartItemsResolved(){
 }
 function cartTotal(){ return cartItemsResolved().reduce((s,i)=>s+i.lineTotal,0); }
 
+function logoMarkup(size){
+  const s = size || (DATA.logo && DATA.logo.size) || 40;
+  if(DATA.logo && DATA.logo.image){
+    return `<img src="${esc(DATA.logo.image)}" style="height:${s}px; width:auto; max-width:${s*4}px; object-fit:contain; display:block;" onerror="this.outerHTML='<div class=&quot;hex&quot;>5S</div>'">`;
+  }
+  return `<div class="hex" style="width:${s}px; height:${s}px;">5S</div>`;
+}
 function headerHtml(){
   const cc = cartCount();
   return `
@@ -661,7 +698,7 @@ function headerHtml(){
   <header class="site">
     <div class="header-row">
       <div class="logo" onclick="goHome()">
-        <div class="hex">5S</div>
+        ${logoMarkup()}
         <span class="disp">${esc(DATA.siteName)}</span>
       </div>
       <div class="header-actions">
@@ -698,15 +735,15 @@ function headerHtml(){
 }
 
 function footerHtml(){
+  const partners = (DATA.partners || []).filter(p=>p.image);
   return `
-  <div class="newsletter">
-    <h2>ARACINA BİZİMLE DEĞER KAT</h2>
-    <p>Özel indirimler ve yeni ürün duyuruları için abone olun</p>
-    <div class="nl-form">
-      <input type="text" placeholder="E-posta adresinizi girin">
-      <button class="btn" onclick="showToast('Bültene kaydolduğunuz için teşekkürler!')">Katıl</button>
+  ${partners.length ? `
+  <div class="partners">
+    <h2>İŞBİRLİKLERİMİZ</h2>
+    <div class="partners-row">
+      ${partners.map(p=>`<div class="partner-logo" title="${esc(p.name||'')}"><img src="${esc(p.image)}" onerror="this.parentElement.style.display='none'"></div>`).join('')}
     </div>
-  </div>
+  </div>` : ''}
   <footer>
     <div class="wrap">
       <div class="foot-grid">
@@ -757,7 +794,7 @@ function heroHtml(){
         <p>${esc(h.subtitle)}</p>
         <button class="btn" onclick="goCategory('__new')">${esc(h.buttonText)}</button>
       </div>
-      <div class="discount-hex hex"><b>%${esc(h.discount)}</b><span>İNDİRİM</span></div>
+      <div class="discount-hex hex"><b>${esc(h.discount)}</b><span>${esc(h.discountLabel||'İNDİRİM')}</span></div>
     </div>
     ${hasImg && n>1 ? `
     <button class="hero-arrow prev" onclick="heroSlide(-1)" aria-label="Önceki">‹</button>
@@ -888,7 +925,7 @@ function productModal(){
       <div class="modal-head"><h3>${esc(prod.name)}</h3><button class="x-close" onclick="closeProduct()">✕</button></div>
       <div class="modal-body">
         <div class="pd-img" style="background:${catColor(prod.category)}">
-          ${prod.image ? `<img src="${esc(prod.image)}" onerror="this.parentElement.textContent='${catIcon(prod.category)}'">` : catIcon(prod.category)}
+          ${prod.image ? `<img src="${esc(prod.image)}" onclick="event.stopPropagation(); openLightbox('${esc(prod.image)}')" onerror="this.parentElement.textContent='${catIcon(prod.category)}'">` : catIcon(prod.category)}
         </div>
         <div class="card-cat">${esc(catName(prod.category))}</div>
         <div style="margin:10px 0 18px;">${priceHtml}</div>
@@ -1236,6 +1273,7 @@ function render(){
     ${VIEW.cartOpen ? cartModal() : ''}
     ${ACCOUNT.open ? accountModal() : ''}
     ${ADMIN.open ? adminHtml() : ''}
+    ${LIGHTBOX_IMG ? lightboxHtml() : ''}
   `;
   if(focusId){
     const el = document.getElementById(focusId);
@@ -1263,7 +1301,7 @@ function adminHtml(){
     <div class="admin-shell">
       <div class="admin-main" style="width:100%;">
         <div class="admin-topbar">
-          <div class="logo"><div class="hex">5S</div><span class="disp">Yönetim Paneli</span></div>
+          <div class="logo">${logoMarkup(36)}<span class="disp">Yönetim Paneli</span></div>
           <button class="icon-btn" onclick="closeAdmin()">✕</button>
         </div>
         <div class="login-box">
@@ -1281,13 +1319,15 @@ function adminHtml(){
   return `
   <div class="admin-shell">
     <div class="admin-sidebar">
-      <div class="logo"><div class="hex">5S</div><span class="disp" style="font-size:14px;">Yönetim</span></div>
+      <div class="logo">${logoMarkup(32)}<span class="disp" style="font-size:14px;">Yönetim</span></div>
       <div class="admin-nav">
         ${navBtn('genel','📊','Genel Bakış')}
         ${navBtn('urunler','🧩','Ürünler')}
         ${navBtn('siparisler','📋','Siparişler')}
+        ${navBtn('rapor','📈','Rapor / Bilanço')}
         ${navBtn('musteriler','👤','Müşteriler')}
         ${navBtn('banner','🖼️','Hero & Banner')}
+        ${navBtn('partners','🤝','İşbirlikleri')}
         ${navBtn('kategori','🏷️','Kategoriler')}
         ${navBtn('ayarlar','⚙️','Site Ayarları')}
       </div>
@@ -1302,8 +1342,10 @@ function adminHtml(){
         ${ADMIN.tab==='genel' ? adminOverview() : ''}
         ${ADMIN.tab==='urunler' ? adminProducts() : ''}
         ${ADMIN.tab==='siparisler' ? adminOrders() : ''}
+        ${ADMIN.tab==='rapor' ? adminReports() : ''}
         ${ADMIN.tab==='musteriler' ? adminCustomers() : ''}
         ${ADMIN.tab==='banner' ? adminBanner() : ''}
+        ${ADMIN.tab==='partners' ? adminPartners() : ''}
         ${ADMIN.tab==='kategori' ? adminCategories() : ''}
         ${ADMIN.tab==='ayarlar' ? adminSettings() : ''}
       </div>
@@ -1312,7 +1354,7 @@ function adminHtml(){
 }
 function navBtn(id,ico,label){ return `<button class="${ADMIN.tab===id?'active':''}" onclick="setAdminTab('${id}')"><span class="ico">${ico}</span>${label}</button>`; }
 function adminTitle(){
-  return {genel:'Genel Bakış', urunler:'Ürün Yönetimi', siparisler:'Siparişler', musteriler:'Kayıt Olan Müşteriler', banner:'Hero & Banner Yönetimi', kategori:'Kategori Yönetimi', ayarlar:'Site Ayarları'}[ADMIN.tab] || '';
+  return {genel:'Genel Bakış', urunler:'Ürün Yönetimi', siparisler:'Siparişler', rapor:'Rapor / Bilanço', musteriler:'Kayıt Olan Müşteriler', banner:'Hero & Banner Yönetimi', partners:'İşbirlikleri Yönetimi', kategori:'Kategori Yönetimi', ayarlar:'Site Ayarları'}[ADMIN.tab] || '';
 }
 function setAdminTab(id){ ADMIN.tab=id; ADMIN.editingProduct=null; render(); }
 
@@ -1373,19 +1415,23 @@ function adminProducts(){
     <div class="hint">Değişiklikler kaydettiğinizde anında sitede yayınlanır.</div>
     <label>Ürün Adı</label>
     <input type="text" id="f-name" value="${esc(prod.name)}" placeholder="Örn: Mercedes Ön Tampon">
-    <div class="row2">
-      <div><label>Kategori</label>
-        <select id="f-cat">${DATA.categories.map(c=>`<option value="${c.id}" ${c.id===prod.category?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
-      </div>
-      <div><label>Fiyat (₺)</label><input type="number" id="f-price" value="${prod.price}" placeholder="0" oninput="syncDiscountFromPrice()"></div>
+    <div style="margin-top:16px; padding:14px; border:2px solid var(--amber); border-radius:8px; background:var(--surface2);">
+      <label style="font-size:14px; font-weight:700; display:block; margin-bottom:6px;">📁 Kategori — bu ürün hangi kategoride listelenecek?</label>
+      <select id="f-cat" style="font-size:15px; padding:12px; font-weight:600;">${DATA.categories.map(c=>`<option value="${c.id}" ${c.id===prod.category?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
+      <div class="hint" style="margin:6px 0 0;">Seçtiğiniz kategori, ürünün sitede hangi kategori sayfasında ve kartındaki etikette görüneceğini belirler.</div>
     </div>
-    <div class="row2">
-      <div><label>İndirim Yüzdesi (%, opsiyonel)</label><input type="number" id="f-discpct" value="${prod.price && prod.salePrice ? Math.round((1-prod.salePrice/prod.price)*100) : ''}" placeholder="Örn: 20" oninput="syncSaleFromPct()"></div>
-      <div><label>İndirimli Fiyat (₺, opsiyonel)</label><input type="number" id="f-sale" value="${prod.salePrice||''}" placeholder="Boş bırakılabilir" oninput="syncPctFromSale()"></div>
+    <div class="row2" style="margin-top:16px;">
+      <div><label>Fiyat (₺)</label><input type="number" id="f-price" value="${prod.price}" placeholder="0" oninput="syncDiscountFromPrice()"></div>
+      <div></div>
+    </div>
+    <div class="check-row"><input type="checkbox" id="f-onsale" ${prod.salePrice?'checked':''} onchange="toggleOnSale(this.checked)"><label for="f-onsale">🏷️ İndirimli — işaretlerseniz ürün otomatik "İndirimde Olanlar" bölümüne eklenir</label></div>
+    <div class="row2" id="f-discount-fields" style="${prod.salePrice?'':'display:none;'}">
+      <div><label>İndirim Yüzdesi (%)</label><input type="number" id="f-discpct" value="${prod.price && prod.salePrice ? Math.round((1-prod.salePrice/prod.price)*100) : ''}" placeholder="Örn: 20" oninput="syncSaleFromPct()"></div>
+      <div><label>İndirimli Fiyat (₺)</label><input type="number" id="f-sale" value="${prod.salePrice||''}" placeholder="Örn: 1500" oninput="syncPctFromSale()"></div>
     </div>
     ${uploadWidget('f-img','f-img-preview','f-img-url', prod.image, catIcon(prod.category))}
-    <div class="check-row"><input type="checkbox" id="f-new" ${prod.isNew?'checked':''}><label for="f-new">"Yeni Gelenler" bölümünde göster</label></div>
-    <div class="check-row"><input type="checkbox" id="f-feat" ${prod.featured?'checked':''}><label for="f-feat">"Senin İçin Seçilenler" bölümünde göster</label></div>
+    <div class="check-row"><input type="checkbox" id="f-new" ${prod.isNew?'checked':''}><label for="f-new">✨ Yeni — işaretlerseniz ürün otomatik "Yeni Gelenler" bölümüne eklenir</label></div>
+    <div class="check-row"><input type="checkbox" id="f-feat" ${prod.featured?'checked':''}><label for="f-feat">⭐ Öne Çıkan — işaretlerseniz ürün otomatik "Senin İçin Seçilenler" bölümüne eklenir</label></div>
     <div style="display:flex; gap:10px; margin-top:22px;">
       <button class="btn" onclick="saveProduct('${editing}')">Kaydet</button>
       <button class="btn outline" onclick="ADMIN.editingProduct=null; render();">Vazgeç</button>
@@ -1402,6 +1448,22 @@ function adminProducts(){
       ${DATA.products.map(prodManageCard).join('')}
     </div>
   </div>`;
+}
+function toggleOnSale(checked){
+  const fields = document.getElementById('f-discount-fields');
+  const pctEl = document.getElementById('f-discpct');
+  const saleEl = document.getElementById('f-sale');
+  if(checked){
+    fields.style.display = '';
+    if(!pctEl.value.trim() && !saleEl.value.trim()){
+      pctEl.value = 10;
+      syncSaleFromPct();
+    }
+  } else {
+    fields.style.display = 'none';
+    pctEl.value = '';
+    saleEl.value = '';
+  }
 }
 function syncSaleFromPct(){
   const price = parseFloat(document.getElementById('f-price').value) || 0;
@@ -1434,6 +1496,7 @@ function saveProduct(editing){
   const isNew = document.getElementById('f-new').checked;
   const featured = document.getElementById('f-feat').checked;
   if(!name){ showToast('Lütfen ürün adı girin'); return; }
+  if(document.getElementById('f-onsale').checked && !salePrice){ showToast('İndirimli için önce Fiyat (₺) alanını doldurun'); return; }
   if(editing==='new'){ DATA.products.unshift({ id:uuid(), name, category, price, salePrice, image, isNew, featured }); }
   else { const p = DATA.products.find(p=>p.id===editing); Object.assign(p, {name, category, price, salePrice, image, isNew, featured}); }
   ADMIN.editingProduct = null;
@@ -1493,6 +1556,90 @@ function deleteOrder(id){
   if(!confirm('Bu siparişi silmek istediğinize emin misiniz?')) return;
   DATA.orders = DATA.orders.filter(o=>o.id!==id);
   saveData(); render(); showToast('Sipariş silindi');
+}
+
+function setReportView(v){ ADMIN.reportView = v; render(); }
+
+function svgBarChart(labels, values, opts){
+  opts = opts || {};
+  const W = opts.width || 720, H = opts.height || 260;
+  const padL = 54, padB = 34, padT = 16, padR = 16;
+  const chartW = W - padL - padR, chartH = H - padT - padB;
+  const maxV = Math.max(1, ...values);
+  const n = values.length;
+  const gap = n > 0 ? chartW / n : chartW;
+  const barW = Math.max(6, gap * 0.55);
+  const gridLines = 4;
+  let gridSvg = '';
+  for(let g=0; g<=gridLines; g++){
+    const y = padT + chartH - (chartH * g/gridLines);
+    const val = Math.round(maxV * g/gridLines);
+    gridSvg += `<line x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" stroke="var(--line)" stroke-width="1"/>`;
+    gridSvg += `<text x="${padL-8}" y="${y+4}" font-size="10" fill="var(--muted)" text-anchor="end">${val>=1000?Math.round(val/1000)+'B':val}</text>`;
+  }
+  let bars = '';
+  values.forEach((v,i)=>{
+    const bh = maxV>0 ? (v/maxV) * chartH : 0;
+    const x = padL + gap*i + (gap-barW)/2;
+    const y = padT + chartH - bh;
+    bars += `<rect x="${x}" y="${y}" width="${barW}" height="${bh}" rx="4" fill="var(--amber)"><title>${esc(labels[i])}: ${money(v)}</title></rect>`;
+    bars += `<text x="${x+barW/2}" y="${padT+chartH+18}" font-size="10" fill="var(--muted)" text-anchor="middle">${esc(labels[i])}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-width:${W}px;">${gridSvg}${bars}</svg>`;
+}
+function adminReports(){
+  const orders = DATA.orders || [];
+  const totalRevenue = orders.reduce((s,o)=>s+(o.total||0),0);
+  const totalItemsSold = orders.reduce((s,o)=>s+o.items.reduce((s2,i)=>s2+i.qty,0),0);
+  const totalOrders = orders.length;
+  const avgOrder = totalOrders ? totalRevenue/totalOrders : 0;
+
+  // Aylık: son 12 ay
+  const now = new Date();
+  const monthLabels = [], monthRevenue = [], monthItems = [];
+  for(let i=11; i>=0; i--){
+    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+    const key = d.getFullYear()+'-'+d.getMonth();
+    monthLabels.push(d.toLocaleDateString('tr-TR', {month:'short', year:'2-digit'}));
+    let rev = 0, items = 0;
+    orders.forEach(o=>{
+      const od = new Date(o.date);
+      if(od.getFullYear()===d.getFullYear() && od.getMonth()===d.getMonth()){ rev += o.total||0; items += o.items.reduce((s,i)=>s+i.qty,0); }
+    });
+    monthRevenue.push(rev); monthItems.push(items);
+  }
+
+  // Yıllık: siparişlerin kapsadığı tüm yıllar
+  const years = Array.from(new Set(orders.map(o=>new Date(o.date).getFullYear()))).sort();
+  const yearLabels = years.length ? years.map(String) : [String(now.getFullYear())];
+  const yearRevenue = yearLabels.map(y=>orders.filter(o=>new Date(o.date).getFullYear()===parseInt(y)).reduce((s,o)=>s+(o.total||0),0));
+  const yearItems = yearLabels.map(y=>orders.filter(o=>new Date(o.date).getFullYear()===parseInt(y)).reduce((s,o)=>s+o.items.reduce((s2,i)=>s2+i.qty,0),0));
+
+  const isMonthly = ADMIN.reportView !== 'yearly';
+  const labels = isMonthly ? monthLabels : yearLabels;
+  const revenueVals = isMonthly ? monthRevenue : yearRevenue;
+  const itemVals = isMonthly ? monthItems : yearItems;
+  const periodRevenue = revenueVals[revenueVals.length-1] || 0;
+  const periodItems = itemVals[itemVals.length-1] || 0;
+
+  return `
+  <div class="stat-grid">
+    <div class="stat-card"><div class="n">${money(totalRevenue)}</div><div class="l">Toplam Ciro (tüm zamanlar)</div></div>
+    <div class="stat-card"><div class="n">${totalItemsSold}</div><div class="l">Toplam Satılan Ürün Adedi</div></div>
+    <div class="stat-card"><div class="n">${totalOrders}</div><div class="l">Toplam Sipariş</div></div>
+    <div class="stat-card"><div class="n">${money(avgOrder)}</div><div class="l">Ortalama Sipariş Tutarı</div></div>
+  </div>
+  <div class="panel">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
+      <h3 style="margin:0;">Ciro Grafiği</h3>
+      <div style="display:flex; gap:8px;">
+        <button class="btn small ${isMonthly?'':'outline'}" onclick="setReportView('monthly')">Aylık (Son 12 Ay)</button>
+        <button class="btn small ${isMonthly?'outline':''}" onclick="setReportView('yearly')">Yıllık</button>
+      </div>
+    </div>
+    <div class="hint">${isMonthly ? 'Bu ayın' : ('Bu yılın')} cirosu: <b>${money(periodRevenue)}</b> · satılan ürün: <b>${periodItems}</b></div>
+    ${orders.length ? svgBarChart(labels, revenueVals) : `<div class="empty" style="margin-top:14px;">Henüz sipariş yok, grafik burada görünecek.</div>`}
+  </div>`;
 }
 
 function adminCustomers(){
@@ -1559,6 +1706,43 @@ function deleteCustomer(id){
   saveData(); render(); showToast('Müşteri silindi');
 }
 
+function adminPartners(){
+  const partners = DATA.partners || [];
+  return `
+  <div class="panel">
+    <h3>İşbirlikleri</h3>
+    <div class="hint">Sitenin altında gösterilecek, çalıştığınız firmaların logoları. Logo yüklemediğiniz kartlar sitede görünmez.</div>
+    ${partners.map((pt,i)=>`
+    <div style="border-top:1px solid var(--line); padding-top:16px; margin-top:${i>0?'16px':'0'};">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <label style="margin:0;">Firma ${i+1}</label>
+        <button class="btn small danger-outline" onclick="removePartner(${i})">Kaldır</button>
+      </div>
+      <input type="text" id="pt-name-${i}" value="${esc(pt.name||'')}" placeholder="Firma adı (opsiyonel)" style="margin-bottom:10px;">
+      ${uploadWidget(`pt-img-${i}`,`pt-img-preview-${i}`,`pt-img-url-${i}`, pt.image||'', '🤝')}
+    </div>`).join('')}
+    <div style="margin-top:22px; ${partners.length?'border-top:1px solid var(--line); padding-top:18px;':''}">
+      <button class="btn outline" onclick="addPartnerSlot()">+ Firma Ekle</button>
+      <button class="btn" style="margin-left:10px;" onclick="savePartners()">Kaydet</button>
+    </div>
+  </div>`;
+}
+function addPartnerSlot(){
+  DATA.partners = DATA.partners || [];
+  DATA.partners.push({name:'', image:''});
+  render();
+}
+function removePartner(i){
+  DATA.partners.splice(i,1);
+  saveData(); render(); showToast('Firma kaldırıldı');
+}
+function savePartners(){
+  DATA.partners = (DATA.partners||[]).map((pt,i)=>({
+    name: (document.getElementById(`pt-name-${i}`)||{}).value || '',
+    image: (document.getElementById(`pt-img-${i}`)||{}).value.trim() || ''
+  }));
+  saveData(); render(); showToast('İşbirlikleri kaydedildi');
+}
 function adminBanner(){
   const h = DATA.hero;
   const images = heroImages();
@@ -1569,9 +1753,10 @@ function adminBanner(){
     <label>Başlık</label><input type="text" id="h-title" value="${esc(h.title)}">
     <label>Alt Metin</label><textarea id="h-sub" rows="2">${esc(h.subtitle)}</textarea>
     <div class="row2">
-      <div><label>İndirim Yüzdesi</label><input type="text" id="h-disc" value="${esc(h.discount)}"></div>
-      <div><label>Buton Metni</label><input type="text" id="h-btn" value="${esc(h.buttonText)}"></div>
+      <div><label>Rozet Büyük Yazı (örn: %25, YENİ, KAMPANYA)</label><input type="text" id="h-disc" value="${esc(h.discount)}" placeholder="%25"></div>
+      <div><label>Rozet Küçük Yazı (örn: İNDİRİM)</label><input type="text" id="h-disc-label" value="${esc(h.discountLabel||'İNDİRİM')}" placeholder="İNDİRİM"></div>
     </div>
+    <label>Buton Metni</label><input type="text" id="h-btn" value="${esc(h.buttonText)}">
     ${[0,1,2,3,4].map(i=>`
     <div style="border-top:1px solid var(--line); padding-top:16px; margin-top:16px;">
       <label>Slayt Fotoğrafı ${i+1}${i===0?' (zorunlu değil, boş bırakılırsa slayt gösterilmez)':''}</label>
@@ -1604,6 +1789,7 @@ function saveHero(){
     title: document.getElementById('h-title').value,
     subtitle: document.getElementById('h-sub').value,
     discount: document.getElementById('h-disc').value,
+    discountLabel: document.getElementById('h-disc-label').value,
     buttonText: document.getElementById('h-btn').value,
     images: images
   };
@@ -1670,7 +1856,17 @@ function deleteCategory(id){
 }
 
 function adminSettings(){
+  const logo = DATA.logo || { image:'', size:40 };
   return `
+  <div class="panel">
+    <h3>Logo</h3>
+    <div class="hint">Kendi logo görselinizi yükleyin ve başlıktaki boyutunu ayarlayın. Görsel yüklemezseniz varsayılan "5S" simgesi gösterilir.</div>
+    ${uploadWidget('s-logo-img','s-logo-preview','s-logo-url', logo.image, '🏷️')}
+    <label style="margin-top:14px;">Logo Boyutu: <span id="s-logo-size-label">${logo.size}px</span></label>
+    <input type="range" id="s-logo-size" min="24" max="80" step="2" value="${logo.size}" oninput="document.getElementById('s-logo-size-label').textContent=this.value+'px';">
+    <div class="hint" style="margin-top:6px;">Kaydettikten sonra sitenin üst kısmındaki logoda yeni boyutu göreceksiniz.</div>
+    <button class="btn" style="margin-top:18px;" onclick="saveLogo()">Logoyu Kaydet</button>
+  </div>
   <div class="panel">
     <h3>Site Ayarları</h3>
     <label>Site Adı</label><input type="text" id="s-name" value="${esc(DATA.siteName)}">
@@ -1682,6 +1878,12 @@ function adminSettings(){
     <div class="hint">Tüm ürünleri, bannerları, siparişleri ve ayarları varsayılan demo verilerine döndürür. Bu işlem geri alınamaz.</div>
     <button class="btn danger-outline" onclick="resetAll()">Varsayılanlara Sıfırla</button>
   </div>`;
+}
+function saveLogo(){
+  const image = document.getElementById('s-logo-img').value.trim();
+  const size = parseInt(document.getElementById('s-logo-size').value, 10) || 40;
+  DATA.logo = { image, size };
+  saveData(); render(); showToast('Logo kaydedildi');
 }
 function saveSettings(){
   DATA.siteName = document.getElementById('s-name').value;

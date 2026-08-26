@@ -337,6 +337,34 @@
 <div id="loading" class="loading-screen"><div class="spin"></div><div class="mono" style="color:var(--muted); font-size:12px;">Yükleniyor...</div></div>
 <div id="app" style="display:none;"></div>
 
+<!-- Firebase (Firestore) — sipariş verisini tüm cihaz/tarayıcılar arasında paylaşmak için -->
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script>
+/* ============ FIREBASE AYARI ============
+   Firebase Console > Proje Ayarları > Genel > "Web uygulaması ekle" bölümünden
+   aldığın firebaseConfig değerlerini aşağıya yapıştır. Doldurmadan site yine çalışır
+   (localStorage'a düşer) ama siparişler tarayıcılar arasında paylaşılmaz. */
+const firebaseConfig = {
+  apiKey: "AIzaSyB3oos97DTEzR9IcANTjudeMG1-OJRLx1g",
+  authDomain: "stech-465d9.firebaseapp.com",
+  projectId: "stech-465d9",
+  storageBucket: "stech-465d9.firebasestorage.app",
+  messagingSenderId: "331949922589",
+  appId: "1:331949922589:web:6e47fef4ea24d81da329f4",
+  measurementId: "G-RC2VYRFD1S"
+};
+let firebaseReady = false;
+let storeDocRef = null;
+try{
+  if(firebaseConfig.apiKey && firebaseConfig.apiKey !== 'BURAYA_YAPISTIR' && firebaseConfig.apiKey){
+    firebase.initializeApp(firebaseConfig);
+    storeDocRef = firebase.firestore().collection('kdr_store').doc('main');
+    firebaseReady = true;
+  }
+}catch(e){ console.error('Firebase başlatma hatası', e); }
+</script>
+
 <script>
 const STORAGE_KEY = 'kdr-store-data-v2';
 const CART_KEY = 'kdr-cart-v1';
@@ -358,20 +386,114 @@ const CUSTOMER_KEY = 'kdr-customer-v1';
 let CUSTOMER = null;
 let ACCOUNT = { open:false, step:'start', tab:'profil' };
 
+/* ---------- sipariş bildirimleri: bu tarayıcıya özel Web Notification API kullanımı.
+   Not: izin ve "açık/kapalı" durumu SADECE bu tarayıcıya kayıtlıdır (localStorage).
+   Chrome, Edge, Firefox gibi her tarayıcıda ayrı ayrı etkinleştirilmesi gerekir, ve
+   bildirimlerin gelebilmesi için site o tarayıcıda bir sekmede açık kalmalıdır
+   (arka planda/simge durumunda küçültülmüş olabilir, ama tamamen kapalı olmamalı). ---------- */
+let NOTIF = {
+  enabled: (localStorage.getItem('kdr-notif-enabled')==='1'),
+  lastOrderId: localStorage.getItem('kdr-notif-last-order') || null,
+  timer: null
+};
+function notifSupported(){ return typeof Notification !== 'undefined'; }
+function notifStatusLabel(){
+  if(!notifSupported()) return 'Bu tarayıcı masaüstü bildirimlerini desteklemiyor.';
+  if(Notification.permission==='denied') return 'Bildirimlere izin verilmemiş. Tarayıcının site ayarlarından izni açmanız gerekiyor.';
+  if(NOTIF.enabled && Notification.permission==='granted') return '🟢 Bu tarayıcıda bildirimler AÇIK.';
+  return '⚪ Bu tarayıcıda bildirimler KAPALI.';
+}
+async function enableNotifications(){
+  if(!notifSupported()){ showToast('Bu tarayıcı masaüstü bildirimlerini desteklemiyor'); return; }
+  const perm = await Notification.requestPermission();
+  if(perm !== 'granted'){ showToast('Bildirim izni verilmedi'); render(); return; }
+  NOTIF.enabled = true;
+  localStorage.setItem('kdr-notif-enabled','1');
+  const latest = (DATA.orders && DATA.orders[0]) ? DATA.orders[0].id : null;
+  NOTIF.lastOrderId = latest;
+  localStorage.setItem('kdr-notif-last-order', latest || '');
+  try{ new Notification('Bildirimler etkinleştirildi', { body:'Yeni siparişlerde bu tarayıcıda bildirim alacaksınız.' }); }catch(e){}
+  startOrderWatcher();
+  render();
+  showToast('Bildirimler bu tarayıcıda açıldı');
+}
+function disableNotifications(){
+  NOTIF.enabled = false;
+  localStorage.setItem('kdr-notif-enabled','0');
+  if(unsubscribeOrders){ unsubscribeOrders(); unsubscribeOrders=null; }
+  render();
+  showToast('Bildirimler bu tarayıcıda kapatıldı');
+}
+function fireOrderNotification(order){
+  if(!notifSupported() || Notification.permission!=='granted') return;
+  const name = order.customerName || 'Yeni müşteri';
+  const total = (order.total||0).toLocaleString('tr-TR') + ' TL';
+  try{
+    const n = new Notification('🛒 Yeni Sipariş: ' + total, { body: name + ' bir sipariş verdi.', tag:'order-'+order.id });
+    n.onclick = function(){ window.focus(); };
+  }catch(e){}
+}
+function handleFreshStoreSnapshot(fresh){
+  const orders = fresh.orders || [];
+  if(!orders.length) return;
+  const latestId = orders[0].id;
+  if(NOTIF.enabled && NOTIF.lastOrderId && latestId !== NOTIF.lastOrderId){
+    const idx = orders.findIndex(o=>o.id===NOTIF.lastOrderId);
+    const newOnes = idx===-1 ? [orders[0]] : orders.slice(0, idx);
+    newOnes.slice().reverse().forEach(o=>fireOrderNotification(o));
+  }
+  if(NOTIF.enabled){
+    NOTIF.lastOrderId = latestId;
+    localStorage.setItem('kdr-notif-last-order', latestId);
+  }
+  if(ADMIN.open && ADMIN.authed && ADMIN.tab==='siparisler'){ DATA.orders = orders; render(); }
+}
+let unsubscribeOrders = null;
+function startOrderWatcher(){
+  if(unsubscribeOrders){ unsubscribeOrders(); unsubscribeOrders=null; }
+  if(!NOTIF.enabled) return;
+  if(!firebaseReady || !storeDocRef) return;
+  // Firestore gerçek zamanlı dinleyici: sipariş verilir verilmez (saniyeler içinde,
+  // 20sn'lik kontrol beklemeden) bu tarayıcıya haber gelir.
+  unsubscribeOrders = storeDocRef.onSnapshot(function(snap){
+    if(!snap.exists) return;
+    const val = snap.data().value;
+    if(!val) return;
+    let fresh;
+    try{ fresh = JSON.parse(val); }catch(e){ return; }
+    handleFreshStoreSnapshot(fresh);
+  }, function(err){ console.error('Firestore dinleme hatası', err); });
+}
+
+
 const CAT_ICONS = { kamera:'📹', kayit:'🖥️', harddisk:'💾', sunucu:'🗄️', yangin:'🔥', switch:'🔌' };
 const CAT_COLORS = { kamera:'#e6eef7', kayit:'#eaeef2', harddisk:'#fdecec', sunucu:'#e9eef1', yangin:'#fdeee0', switch:'#e8f2ec' };
 
 function uuid(){ return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'id-'+Date.now()+'-'+Math.random().toString(16).slice(2); }
 
-/* ---------- storage: uses window.storage when available (Claude artifact preview),
-   falls back to localStorage automatically so the site also works standalone / self-hosted ---------- */
+/* ---------- storage: paylaşımlı veri (ürünler/siparişler/ayarlar) Firebase Firestore'da
+   tek bir dokümanda tutuluyor — böylece hangi cihazdan/tarayıcıdan sipariş verilirse
+   verilsin, yönetim paneli ve bildirim sistemi bunu anında görebiliyor. Sepet
+   (shared:false) hâlâ sadece o ziyaretçinin kendi tarayıcısında, localStorage'da
+   tutuluyor (paylaşılmasına gerek yok). window.storage varsa (Claude önizlemesi) o
+   önceliklidir; yoksa Firestore denenir; o da başarısız olursa (ör. henüz
+   firebaseConfig doldurulmadıysa) localStorage'a düşer. ---------- */
 async function storageGet(key, shared){
   try{
     if(window.storage && typeof window.storage.get==='function'){
       const r = await window.storage.get(key, shared);
       if(r) return r;
     }
-  }catch(e){ /* fall through to localStorage */ }
+  }catch(e){ /* devam et */ }
+  if(shared && firebaseReady && storeDocRef){
+    try{
+      const snap = await storeDocRef.get();
+      if(snap.exists){
+        const val = snap.data().value;
+        if(val) return { key, value:val, shared };
+      }
+    }catch(e){ console.error('Firestore okuma hatası', e); }
+  }
   try{
     const raw = localStorage.getItem((shared?'kdr_shared_':'kdr_local_')+key);
     return raw!=null ? {key, value:raw, shared} : null;
@@ -384,7 +506,13 @@ async function storageSet(key, value, shared){
       const r = await window.storage.set(key, value, shared);
       if(r) ok = true;
     }
-  }catch(e){ /* fall through to localStorage */ }
+  }catch(e){ /* devam et */ }
+  if(shared && firebaseReady && storeDocRef){
+    try{
+      await storeDocRef.set({ value: value, updatedAt: Date.now() });
+      ok = true;
+    }catch(e){ console.error('Firestore yazma hatası', e); }
+  }
   try{
     localStorage.setItem((shared?'kdr_shared_':'kdr_local_')+key, value);
     ok = true;
@@ -448,6 +576,7 @@ async function loadData(){
   document.getElementById('loading').style.display='none';
   document.getElementById('app').style.display='block';
   render();
+  if(NOTIF.enabled && notifSupported() && Notification.permission==='granted'){ startOrderWatcher(); }
 }
 async function saveData(){
   try{ const result = await storageSet(STORAGE_KEY, JSON.stringify(DATA), true); if(!result){ showToast('Kaydetme başarısız oldu, tekrar deneyin'); } }
@@ -1250,6 +1379,7 @@ function placeOrder(){
   if(!DATA.orders) DATA.orders=[];
   DATA.orders.unshift(order);
   saveData();
+  if(NOTIF.enabled){ fireOrderNotification(order); NOTIF.lastOrderId = order.id; localStorage.setItem('kdr-notif-last-order', order.id); }
   CART=[]; saveCart();
   VIEW.cartOpen=false;
   render();
@@ -1872,6 +2002,15 @@ function adminSettings(){
     <label>Site Adı</label><input type="text" id="s-name" value="${esc(DATA.siteName)}">
     <label>Duyuru Bandı Metni</label><input type="text" id="s-announce" value="${esc(DATA.announcement)}">
     <button class="btn" style="margin-top:18px;" onclick="saveSettings()">Kaydet</button>
+  </div>
+  <div class="panel">
+    <h3>🔔 Sipariş Bildirimleri</h3>
+    <div class="hint">Bir müşteri sipariş verdiğinde bu tarayıcıda (Windows üzerinde Chrome, Edge, Firefox vb.) masaüstü bildirimi almak için etkinleştirin.</div>
+    <div class="hint" style="margin-top:8px;">Önemli: İzin ve "açık/kapalı" durumu sadece kullandığınız tarayıcıya kayıtlıdır. Bildirimleri hem Chrome'da hem Firefox'ta almak istiyorsanız her ikisinde de ayrı ayrı "Etkinleştir" butonuna basmanız gerekir. Ayrıca bildirimlerin gelebilmesi için site o tarayıcıda bir sekmede açık kalmalı (simge durumuna küçültülmüş/arka planda olabilir, ama tarayıcı tamamen kapalıyken bildirim gelmez).</div>
+    <p style="margin-top:12px; font-size:13px; font-weight:600;">${notifStatusLabel()}</p>
+    ${NOTIF.enabled && notifSupported() && Notification.permission==='granted'
+      ? `<button class="btn danger-outline" style="margin-top:14px;" onclick="disableNotifications()">Bildirimleri Kapat</button>`
+      : `<button class="btn" style="margin-top:14px;" onclick="enableNotifications()">🔔 Bildirimleri Etkinleştir</button>`}
   </div>
   <div class="panel">
     <h3>Verileri Sıfırla</h3>

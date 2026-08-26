@@ -487,7 +487,6 @@ async function enableNotifications(){
 function disableNotifications(){
   NOTIF.enabled = false;
   localStorage.setItem('kdr-notif-enabled','0');
-  if(unsubscribeOrders){ unsubscribeOrders(); unsubscribeOrders=null; }
   render();
   showToast('Bildirimler bu tarayıcıda kapatıldı');
 }
@@ -502,26 +501,36 @@ function fireOrderNotification(order){
 }
 function handleFreshStoreSnapshot(fresh){
   const orders = fresh.orders || [];
-  if(!orders.length) return;
-  const latestId = orders[0].id;
-  if(NOTIF.enabled && NOTIF.lastOrderId && latestId !== NOTIF.lastOrderId){
-    const idx = orders.findIndex(o=>o.id===NOTIF.lastOrderId);
-    const newOnes = idx===-1 ? [orders[0]] : orders.slice(0, idx);
-    newOnes.slice().reverse().forEach(o=>fireOrderNotification(o));
+  if(orders.length){
+    const latestId = orders[0].id;
+    if(NOTIF.enabled && NOTIF.lastOrderId && latestId !== NOTIF.lastOrderId){
+      const idx = orders.findIndex(o=>o.id===NOTIF.lastOrderId);
+      const newOnes = idx===-1 ? [orders[0]] : orders.slice(0, idx);
+      newOnes.slice().reverse().forEach(o=>fireOrderNotification(o));
+    }
+    if(NOTIF.enabled){
+      NOTIF.lastOrderId = latestId;
+      localStorage.setItem('kdr-notif-last-order', latestId);
+    }
   }
-  if(NOTIF.enabled){
-    NOTIF.lastOrderId = latestId;
-    localStorage.setItem('kdr-notif-last-order', latestId);
+  // Canlı senkron: aktif bir yazı alanına yazılırken veya bir ürün/kategori
+  // düzenleme formu açıkken üzerine yazmayı önlemek dışında, gelen veriyi
+  // her zaman uygula (sadece "Siparişler" sekmesiyle sınırlı değil).
+  const active = document.activeElement;
+  const isTyping = active && (active.tagName==='INPUT'||active.tagName==='TEXTAREA') && document.body.contains(active);
+  if(!isTyping && !ADMIN.editingProduct){
+    DATA = fresh;
+    normalizeData();
+    render();
   }
-  if(ADMIN.open && ADMIN.authed && ADMIN.tab==='siparisler'){ DATA.orders = orders; render(); }
 }
 let unsubscribeOrders = null;
 function startOrderWatcher(){
   if(unsubscribeOrders){ unsubscribeOrders(); unsubscribeOrders=null; }
-  if(!NOTIF.enabled) return;
   if(!firebaseReady || !storeDocRef) return;
   // Firestore gerçek zamanlı dinleyici: sipariş verilir verilmez (saniyeler içinde,
-  // 20sn'lik kontrol beklemeden) bu tarayıcıya haber gelir.
+  // 20sn'lik kontrol beklemeden) bu tarayıcıya haber gelir — bildirimler kapalı
+  // olsa bile veri her zaman canlı senkronize olur.
   unsubscribeOrders = storeDocRef.onSnapshot(function(snap){
     if(!snap.exists) return;
     const val = snap.data().value;
@@ -661,7 +670,7 @@ async function loadData(){
   }catch(e){ /* mevcut sepeti koru */ }
   await loadCustomerSession();
   render();
-  if(NOTIF.enabled && notifSupported() && Notification.permission==='granted'){ startOrderWatcher(); }
+  startOrderWatcher();
 }
 async function saveData(){
   try{ const result = await storageSet(STORAGE_KEY, JSON.stringify(DATA), true); if(!result){ showToast('Kaydetme başarısız oldu, tekrar deneyin'); } }

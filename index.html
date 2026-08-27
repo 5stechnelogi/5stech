@@ -1,6 +1,7 @@
 
 
 
+
 <!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -650,9 +651,14 @@ function mergeIncomingOrders(incoming){
   DATA.orders.forEach(o=>{ byId[o.id]=o; });
   incoming.forEach(o=>{ byId[o.id]=o; });
   const merged = Object.values(byId).sort((a,b)=> new Date(b.date) - new Date(a.date));
-  const changed = JSON.stringify(merged.map(o=>o.id)) !== JSON.stringify(DATA.orders.map(o=>o.id));
+  // Not: sadece ID listesini değil, sipariş içeriğini (özellikle "status" alanını) de
+  // karşılaştırıyoruz. Aksi halde bir sipariş sadece "onaylandı"/"hazır" olarak
+  // güncellendiğinde (yeni sipariş eklenmediği/silinmediği için) ID listesi aynı kalır ve
+  // bu değişiklik diğer sekmelere/cihazlara (müşterinin ekranı dahil) hiç yansımaz.
+  const changed = JSON.stringify(merged) !== JSON.stringify(DATA.orders);
   if(!changed) return;
-  notifyNewOrders(merged);
+  const idsChanged = JSON.stringify(merged.map(o=>o.id)) !== JSON.stringify(DATA.orders.map(o=>o.id));
+  if(idsChanged) notifyNewOrders(merged);
   DATA.orders = merged;
   // Çok sayıda sipariş çok kısa sürede (arka arkaya) gelirse, Firestore her birinde ayrı
   // bir bildirim tetikler; her seferinde tüm sayfayı yeniden çizmek (render()) tarayıcıyı
@@ -1205,8 +1211,21 @@ function grid(products){
   return `<div class="grid">${products.map(productCard).join('')}</div>`;
 }
 
-function cartCount(){ return CART.reduce((s,i)=>s+i.qty,0); }
+// Not: sepetteki bir ürün kataloğundan silinmiş/kaldırılmış olabilir (ör. yönetim
+// panelinden ürün silindi ya da başka bir cihazda katalog değişti). Böyle "hayalet"
+// kayıtlar burada CART dizisinden temizlenir; aksi halde sepet ikonundaki sayaç
+// (ham CART.qty toplamı) ile sepet penceresinde gösterilen ürünler (yalnızca hâlâ
+// katalogda bulunanlar) birbirinden farklı sayılara denk gelir — "sayaçta 2 var ama
+// sepet boş görünüyor" hatasına yol açar.
+function pruneGhostCartItems(){
+  if(!DATA || !DATA.products) return;
+  const before = CART.length;
+  CART = CART.filter(c => DATA.products.some(p=>p.id===c.productId));
+  if(CART.length !== before) saveCart();
+}
+function cartCount(){ pruneGhostCartItems(); return CART.reduce((s,i)=>s+i.qty,0); }
 function cartItemsResolved(){
+  pruneGhostCartItems();
   return CART.map(c=>{
     const p = DATA.products.find(p=>p.id===c.productId);
     if(!p) return null;

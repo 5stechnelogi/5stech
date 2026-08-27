@@ -408,6 +408,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-storage-compat.js"></script>
 <script>
 /* ============ FIREBASE AYARI ============
    Firebase Console > Proje Ayarları > Genel > "Web uygulaması ekle" bölümünden
@@ -424,6 +425,8 @@ const firebaseConfig = {
 };
 let firebaseReady = false;
 let storeDocRef = null;
+let firebaseStorageRef = null;
+let ordersColRef = null;
 /* Firestore güvenlik kuralları "request.auth != null" istiyor (yani sadece giriş
    yapmış kullanıcılar okuyup yazabiliyor). Sitede ayrı bir müşteri girişi olmadığı
    için her ziyaretçiyi arka planda GÖRÜNMEZ şekilde "anonim" olarak Firebase'e
@@ -437,7 +440,9 @@ try{
   if(firebaseConfig.apiKey && firebaseConfig.apiKey !== 'BURAYA_YAPISTIR' && firebaseConfig.apiKey){
     firebase.initializeApp(firebaseConfig);
     storeDocRef = firebase.firestore().collection('kdr_store').doc('main');
+    ordersColRef = firebase.firestore().collection('kdr_orders');
     firebaseReady = true;
+    try{ firebaseStorageRef = firebase.storage().ref(); }catch(e){ console.error('Firebase Storage başlatma hatası (Storage etkinleştirilmemiş olabilir):', e); }
     firebase.auth().onAuthStateChanged(function(user){
       if(user){ resolveAuthReady(); }
       else{
@@ -562,6 +567,57 @@ async function startOrderWatcher(){
     try{ fresh = JSON.parse(val); }catch(e){ return; }
     handleFreshStoreSnapshot(fresh);
   }, function(err){ console.error('Firestore dinleme hatası', err); });
+}
+
+/* ---------- siparişler: ürün/görsel verisinden TAMAMEN AYRI, kendi küçük koleksiyonunda
+   (kdr_orders) tutulur. Böylece ürün fotoğrafları büyüyüp ana dokümanı (kdr_store/main)
+   1MB sınırının üzerine çıkarsa bile, siparişler bundan etkilenmeden anında senkronize
+   olmaya devam eder — sipariş senkronizasyonu, katalog senkronizasyonuna bağımlı değildir. ---------- */
+function orderForSync(order){
+  // Sipariş içindeki ürün görseli, eğer yerelde base64 olarak sıkıştırılmışsa (http ile
+  // başlamıyorsa) burada atılır — sipariş dokümanını küçük ve senkronizasyonu garanti tutmak
+  // için. Barkod/https görsel adresleri (Firebase Storage / Vercel Blob) korunur.
+  return Object.assign({}, order, {
+    items: (order.items||[]).map(i => Object.assign({}, i, { image: (i.image && /^https?:\/\//.test(i.image)) ? i.image : '' }))
+  });
+}
+let unsubscribeOrdersCol = null;
+async function startOrdersColWatcher(){
+  if(unsubscribeOrdersCol){ unsubscribeOrdersCol(); unsubscribeOrdersCol=null; }
+  if(!firebaseReady || !ordersColRef) return;
+  await firebaseAuthReadyPromise;
+  unsubscribeOrdersCol = ordersColRef.orderBy('date','desc').limit(500).onSnapshot(function(snap){
+    const incoming = snap.docs.map(d=>d.data());
+    mergeIncomingOrders(incoming);
+  }, function(err){ console.error('Sipariş koleksiyonu dinleme hatası', err); });
+}
+function mergeIncomingOrders(incoming){
+  if(!DATA) return;
+  if(!DATA.orders) DATA.orders = [];
+  const byId = {};
+  DATA.orders.forEach(o=>{ byId[o.id]=o; });
+  incoming.forEach(o=>{ byId[o.id]=o; });
+  const merged = Object.values(byId).sort((a,b)=> new Date(b.date) - new Date(a.date));
+  const changed = JSON.stringify(merged.map(o=>o.id)) !== JSON.stringify(DATA.orders.map(o=>o.id));
+  DATA.orders = merged;
+  if(changed){
+    handleFreshStoreSnapshot({ orders: merged });
+    try{ localStorage.setItem('kdr_shared_'+STORAGE_KEY, JSON.stringify(DATA)); }catch(e){}
+  }
+}
+async function syncOrderToFirestore(order){
+  if(!firebaseReady || !ordersColRef) return;
+  try{
+    await firebaseAuthReadyPromise;
+    await ordersColRef.doc(order.id).set(orderForSync(order));
+  }catch(e){ console.error('Sipariş senkronizasyon hatası', e); }
+}
+async function deleteOrderFromFirestore(id){
+  if(!firebaseReady || !ordersColRef) return;
+  try{
+    await firebaseAuthReadyPromise;
+    await ordersColRef.doc(id).delete();
+  }catch(e){ console.error('Sipariş silme senkronizasyon hatası', e); }
 }
 
 
@@ -696,9 +752,17 @@ async function loadData(){
   await loadCustomerSession();
   render();
   startOrderWatcher();
+  startOrdersColWatcher();
 }
 async function saveData(){
-  try{ const result = await storageSet(STORAGE_KEY, JSON.stringify(DATA), true); if(!result){ showToast('Kaydetme başarısız oldu, tekrar deneyin'); } }
+  try{
+    const json = JSON.stringify(DATA);
+    if(json.length > 950000){
+      showToast('⚠️ Veri çok büyük (muhtemelen eski, yerel olarak yüklenmiş fotoğraflar var). Ayarlar > ilgili fotoğrafları yeniden yükleyip kaydedin.');
+    }
+    const result = await storageSet(STORAGE_KEY, json, true);
+    if(!result){ showToast('Kaydetme başarısız oldu, tekrar deneyin'); }
+  }
   catch(e){ console.error('save failed', e); showToast('Kaydetme hatası: veri çok büyük olabilir'); }
 }
 async function saveCart(){
@@ -840,33 +904,58 @@ function handleImageFile(event, hiddenId, previewId){
   const prev = document.getElementById(previewId);
   showToast('Fotoğraf yükleniyor...');
 
-  // Öncelik: Vercel Blob'a gerçek dosya olarak yükle (tam çözünürlük, sınırsıza yakın).
-  // /api/upload yoksa (örn. Blob henüz bağlanmadıysa veya siteyi Vercel dışında
-  // çalıştırıyorsanız) otomatik olarak yerel sıkıştırma+data URL yöntemine döner.
-  uploadToBlob(file)
+  function localFallback(reasonLabel){
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        const dataUrl = compressToTarget(img);
+        if(hidden) hidden.value = dataUrl;
+        if(prev){ prev.style.backgroundImage = `url(${dataUrl})`; prev.textContent=''; }
+        const kb = Math.round(dataUrlBytes(dataUrl)/1024);
+        showToast(`Fotoğraf yüklendi (yerel, ~${kb}KB) — dikkat: bulut depolama çalışmıyor, çok fazla yerel fotoğraf eklerseniz kaydetme hata verebilir`);
+      };
+      img.onerror = () => showToast('Görsel okunamadı, farklı bir dosya deneyin');
+      img.src = e.target.result;
+    };
+    reader.onerror = () => showToast('Dosya okunamadı');
+    reader.readAsDataURL(file);
+  }
+
+  // Öncelik 1: Firebase Storage'a gerçek dosya olarak yükle (tam çözünürlük, Firestore
+  // dokümanını şişirmez — sadece küçük bir bağlantı adresi kaydedilir).
+  // Öncelik 2: Vercel Blob (varsa /api/upload uç noktası).
+  // Son çare: yerel sıkıştırma + data URL (Firestore'a doğrudan gömülür, sınırlı boyut).
+  uploadToFirebaseStorage(file)
     .then(url => {
       if(hidden) hidden.value = url;
       if(prev){ prev.style.backgroundImage = `url(${url})`; prev.textContent=''; }
-      showToast('Fotoğraf yüklendi (Vercel Blob)');
+      showToast('Fotoğraf yüklendi (Firebase Storage)');
     })
     .catch(err => {
-      console.warn('Blob yükleme kullanılamadı, yerel sıkıştırmaya dönülüyor:', err);
-      const reader = new FileReader();
-      reader.onload = e => {
-        const img = new Image();
-        img.onload = () => {
-          const dataUrl = compressToTarget(img);
-          if(hidden) hidden.value = dataUrl;
-          if(prev){ prev.style.backgroundImage = `url(${dataUrl})`; prev.textContent=''; }
-          const kb = Math.round(dataUrlBytes(dataUrl)/1024);
-          showToast(`Fotoğraf yüklendi (yerel, ~${kb}KB)`);
-        };
-        img.onerror = () => showToast('Görsel okunamadı, farklı bir dosya deneyin');
-        img.src = e.target.result;
-      };
-      reader.onerror = () => showToast('Dosya okunamadı');
-      reader.readAsDataURL(file);
+      console.warn('Firebase Storage yükleme kullanılamadı, Vercel Blob deneniyor:', err);
+      uploadToBlob(file)
+        .then(url => {
+          if(hidden) hidden.value = url;
+          if(prev){ prev.style.backgroundImage = `url(${url})`; prev.textContent=''; }
+          showToast('Fotoğraf yüklendi (Vercel Blob)');
+        })
+        .catch(err2 => {
+          console.warn('Blob yükleme de kullanılamadı, yerel sıkıştırmaya dönülüyor:', err2);
+          localFallback();
+        });
     });
+}
+
+async function uploadToFirebaseStorage(file){
+  if(!firebaseReady || !firebaseStorageRef) throw new Error('Firebase Storage kullanılamıyor');
+  await firebaseAuthReadyPromise;
+  const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g,'_');
+  const path = 'uploads/' + Date.now() + '-' + Math.random().toString(36).slice(2) + '-' + safeName;
+  const fileRef = firebaseStorageRef.child(path);
+  const snapshot = await fileRef.put(file);
+  const url = await snapshot.ref.getDownloadURL();
+  return url;
 }
 
 async function uploadToBlob(file){
@@ -1522,6 +1611,7 @@ function placeOrder(){
   if(!DATA.orders) DATA.orders=[];
   DATA.orders.unshift(order);
   saveData();
+  syncOrderToFirestore(order);
   if(NOTIF.enabled){ fireOrderNotification(order); NOTIF.lastOrderId = order.id; localStorage.setItem('kdr-notif-last-order', order.id); }
   CART=[]; saveCart();
   VIEW.cartOpen=false;
@@ -1834,7 +1924,9 @@ function adminOrders(){
 async function deleteOrder(id){
   if(!(await appConfirm('Bu siparişi silmek istediğinize emin misiniz?', 'Sil'))) return;
   DATA.orders = DATA.orders.filter(o=>o.id!==id);
-  saveData(); render(); showToast('Sipariş silindi');
+  saveData();
+  deleteOrderFromFirestore(id);
+  render(); showToast('Sipariş silindi');
 }
 
 function setReportView(v){ ADMIN.reportView = v; render(); }

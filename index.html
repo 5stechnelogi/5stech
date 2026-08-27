@@ -526,20 +526,21 @@ function fireOrderNotification(order){
     n.onclick = function(){ window.focus(); };
   }catch(e){}
 }
-function handleFreshStoreSnapshot(fresh){
-  const orders = fresh.orders || [];
-  if(orders.length){
-    const latestId = orders[0].id;
-    if(NOTIF.enabled && NOTIF.lastOrderId && latestId !== NOTIF.lastOrderId){
-      const idx = orders.findIndex(o=>o.id===NOTIF.lastOrderId);
-      const newOnes = idx===-1 ? [orders[0]] : orders.slice(0, idx);
-      newOnes.slice().reverse().forEach(o=>fireOrderNotification(o));
-    }
-    if(NOTIF.enabled){
-      NOTIF.lastOrderId = latestId;
-      localStorage.setItem('kdr-notif-last-order', latestId);
-    }
+function notifyNewOrders(orders){
+  if(!orders.length) return;
+  const latestId = orders[0].id;
+  if(NOTIF.enabled && NOTIF.lastOrderId && latestId !== NOTIF.lastOrderId){
+    const idx = orders.findIndex(o=>o.id===NOTIF.lastOrderId);
+    const newOnes = idx===-1 ? [orders[0]] : orders.slice(0, idx);
+    newOnes.slice().reverse().forEach(o=>fireOrderNotification(o));
   }
+  if(NOTIF.enabled){
+    NOTIF.lastOrderId = latestId;
+    localStorage.setItem('kdr-notif-last-order', latestId);
+  }
+}
+function handleFreshStoreSnapshot(fresh){
+  notifyNewOrders(fresh.orders || []);
   // Canlı senkron: aktif bir yazı alanına yazılırken veya bir ürün/kategori
   // düzenleme formu açıkken üzerine yazmayı önlemek dışında, gelen veriyi
   // her zaman uygula (sadece "Siparişler" sekmesiyle sınırlı değil).
@@ -599,11 +600,13 @@ function mergeIncomingOrders(incoming){
   incoming.forEach(o=>{ byId[o.id]=o; });
   const merged = Object.values(byId).sort((a,b)=> new Date(b.date) - new Date(a.date));
   const changed = JSON.stringify(merged.map(o=>o.id)) !== JSON.stringify(DATA.orders.map(o=>o.id));
+  if(!changed) return;
+  notifyNewOrders(merged);
+  const active = document.activeElement;
+  const isTyping = active && (active.tagName==='INPUT'||active.tagName==='TEXTAREA') && document.body.contains(active);
   DATA.orders = merged;
-  if(changed){
-    handleFreshStoreSnapshot({ orders: merged });
-    try{ localStorage.setItem('kdr_shared_'+STORAGE_KEY, JSON.stringify(DATA)); }catch(e){}
-  }
+  try{ localStorage.setItem('kdr_shared_'+STORAGE_KEY, JSON.stringify(DATA)); }catch(e){}
+  if(!isTyping && !ADMIN.editingProduct){ render(); }
 }
 async function syncOrderToFirestore(order){
   if(!firebaseReady || !ordersColRef) return;

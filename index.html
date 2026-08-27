@@ -907,7 +907,19 @@ async function loadData(){
   const beforeJson = catalogComparable(DATA||{});
   try{
     const res = await storageGet(STORAGE_KEY, true);
-    if(res && res.value){ DATA = JSON.parse(res.value); }
+    if(res && res.value){
+      DATA = JSON.parse(res.value);
+      // ÖNEMLİ: Firestore'dan taze veri geldiğinde yerel önbelleği (localStorage) de
+      // hemen güncelliyoruz. Aksi halde önbellek sadece BU tarayıcıdan bir kayıt
+      // (ürün ekleme/silme, sipariş vb.) yapıldığında güncelleniyordu — başka bir
+      // cihazdan/sekmeden yapılan ürün değişiklikleri bu tarayıcının önbelleğine hiç
+      // yazılmıyordu. Sonuç: sayfa her yenilendiğinde önce (varsa) günlerce eski kalmış
+      // önbellek anlık olarak çizilip (ör. artık var olmayan veya "Yeni" işareti
+      // kaldırılmış ürünler kısa süre görünüp), hemen ardından taze veri gelince o
+      // ürünler ekrandan siliniyordu — "ürünler belirip kayboluyor" izlenimi buradan
+      // geliyordu. Önbellek her yüklemede tazelenince bu "titreme" bir daha oluşmaz.
+      try{ localStorage.setItem('kdr_shared_'+STORAGE_KEY, res.value); }catch(e){}
+    }
     else if(!DATA){ DATA = defaultData(); await saveData(); }
   }catch(e){ if(!DATA) DATA = defaultData(); }
   normalizeData();

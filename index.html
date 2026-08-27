@@ -1,6 +1,5 @@
 
 
-
 <!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -423,10 +422,22 @@ const firebaseConfig = {
 };
 let firebaseReady = false;
 let storeDocRef = null;
+let ordersDocRef = null;
 try{
   if(firebaseConfig.apiKey && firebaseConfig.apiKey !== 'BURAYA_YAPISTIR' && firebaseConfig.apiKey){
     firebase.initializeApp(firebaseConfig);
     storeDocRef = firebase.firestore().collection('kdr_store').doc('main');
+    /* Siparişler kasıtlı olarak AYRI ve küçük bir dokümanda tutulur.
+       Neden: 'main' dokümanı ürün fotoğraflarını (base64) içerir ve
+       Firestore'da tek bir alanın izin verdiği ~1MB sınırına yaklaşabilir/
+       aşabilir (bkz. "longer than 1048487 bytes" hatası). Eğer siparişler de
+       aynı dokümanda tutulsaydı, ürün fotoğrafları yüzünden doküman sınırı
+       aşıldığında sipariş yazma işlemi de (genelde sessizce) başarısız
+       olurdu — özellikle telefondan, daha büyük veri paketiyle sipariş
+       eklendiğinde. Siparişleri kendi küçük dokümanında tutmak, kaç ürün
+       fotoğrafı olursa olsun sipariş akışının hiçbir zaman tıkanmamasını
+       sağlar. */
+    ordersDocRef = firebase.firestore().collection('kdr_store').doc('orders');
     firebaseReady = true;
   }
 }catch(e){ console.error('Firebase başlatma hatası', e); }
@@ -434,6 +445,10 @@ try{
 
 <script>
 const STORAGE_KEY = 'kdr-store-data-v2';
+/* Siparişler artık STORAGE_KEY'in içindeki DATA nesnesinde DEĞİL, kendi
+   ayrı ve küçük dokümanında/anahtarında tutulur — bkz. yukarıdaki
+   ordersDocRef açıklaması. */
+const ORDERS_KEY = 'kdr-store-orders-v1';
 const CART_KEY = 'kdr-cart-v1';
 const ADMIN_PASS = '5s2563';
 let DATA = null;
@@ -499,8 +514,8 @@ function fireOrderNotification(order){
     n.onclick = function(){ window.focus(); };
   }catch(e){}
 }
-function handleFreshStoreSnapshot(fresh){
-  const orders = fresh.orders || [];
+function handleFreshOrdersSnapshot(orders){
+  orders = orders || [];
   if(orders.length){
     const latestId = orders[0].id;
     if(NOTIF.enabled && NOTIF.lastOrderId && latestId !== NOTIF.lastOrderId){
@@ -515,29 +530,32 @@ function handleFreshStoreSnapshot(fresh){
   }
   // Canlı senkron: aktif bir yazı alanına yazılırken veya bir ürün/kategori
   // düzenleme formu açıkken üzerine yazmayı önlemek dışında, gelen veriyi
-  // her zaman uygula (sadece "Siparişler" sekmesiyle sınırlı değil).
+  // her zaman uygula (sadece "Siparişler" sekmesiyle sınırlı değil). Not:
+  // sadece DATA.orders güncellenir — ürünler/kategoriler/ayarlar gibi diğer
+  // paylaşımlı veriler artık bu dokümanda olmadığı için dokunulmaz.
   const active = document.activeElement;
   const isTyping = active && (active.tagName==='INPUT'||active.tagName==='TEXTAREA') && document.body.contains(active);
   if(!isTyping && !ADMIN.editingProduct){
-    DATA = fresh;
-    normalizeData();
+    DATA.orders = orders;
     render();
   }
 }
 let unsubscribeOrders = null;
 function startOrderWatcher(){
   if(unsubscribeOrders){ unsubscribeOrders(); unsubscribeOrders=null; }
-  if(!firebaseReady || !storeDocRef) return;
-  // Firestore gerçek zamanlı dinleyici: sipariş verilir verilmez (saniyeler içinde,
-  // 20sn'lik kontrol beklemeden) bu tarayıcıya haber gelir — bildirimler kapalı
-  // olsa bile veri her zaman canlı senkronize olur.
-  unsubscribeOrders = storeDocRef.onSnapshot(function(snap){
+  if(!firebaseReady || !ordersDocRef) return;
+  // Firestore gerçek zamanlı dinleyici — küçük ve ayrı 'orders' dokümanını
+  // dinler (ürün fotoğraflarını içeren 'main' dokümanını değil). Sipariş
+  // verilir verilmez (saniyeler içinde, 20sn'lik kontrol beklemeden) bu
+  // tarayıcıya haber gelir — bildirimler kapalı olsa bile veri her zaman
+  // canlı senkronize olur.
+  unsubscribeOrders = ordersDocRef.onSnapshot(function(snap){
     if(!snap.exists) return;
     const val = snap.data().value;
     if(!val) return;
     let fresh;
     try{ fresh = JSON.parse(val); }catch(e){ return; }
-    handleFreshStoreSnapshot(fresh);
+    handleFreshOrdersSnapshot(fresh);
   }, function(err){ console.error('Firestore dinleme hatası', err); });
 }
 
@@ -554,6 +572,13 @@ function uuid(){ return (window.crypto && crypto.randomUUID) ? crypto.randomUUID
    tutuluyor (paylaşılmasına gerek yok). window.storage varsa (Claude önizlemesi) o
    önceliklidir; yoksa Firestore denenir; o da başarısız olursa (ör. henüz
    firebaseConfig doldurulmadıysa) localStorage'a düşer. ---------- */
+/* Hangi anahtarın hangi Firestore dokümanına yazılacağını belirler.
+   Siparişler (ORDERS_KEY) kendi küçük 'orders' dokümanına, geri kalan her
+   şey (ürünler/kategoriler/ayarlar/bannerlar, STORAGE_KEY) 'main' dokümanına
+   gider — böylece büyük ürün fotoğrafları sipariş yazmasını asla etkilemez. */
+function firestoreDocFor(key){
+  return key === ORDERS_KEY ? ordersDocRef : storeDocRef;
+}
 async function storageGet(key, shared){
   try{
     if(window.storage && typeof window.storage.get==='function'){
@@ -561,9 +586,10 @@ async function storageGet(key, shared){
       if(r) return r;
     }
   }catch(e){ /* devam et */ }
-  if(shared && firebaseReady && storeDocRef){
+  const docRef = firestoreDocFor(key);
+  if(shared && firebaseReady && docRef){
     try{
-      const snap = await storeDocRef.get();
+      const snap = await docRef.get();
       if(snap.exists){
         const val = snap.data().value;
         if(val) return { key, value:val, shared };
@@ -583,9 +609,10 @@ async function storageSet(key, value, shared){
       if(r) ok = true;
     }
   }catch(e){ /* devam et */ }
-  if(shared && firebaseReady && storeDocRef){
+  const docRef = firestoreDocFor(key);
+  if(shared && firebaseReady && docRef){
     try{
-      await storeDocRef.set({ value: value, updatedAt: Date.now() });
+      await docRef.set({ value: value, updatedAt: Date.now() });
       ok = true;
     }catch(e){ console.error('Firestore yazma hatası', e); }
   }
@@ -649,6 +676,11 @@ function init(){
     const cached = localStorage.getItem('kdr_shared_'+STORAGE_KEY);
     DATA = cached ? JSON.parse(cached) : defaultData();
   }catch(e){ DATA = defaultData(); }
+  // Siparişler ayrı bir yerel önbellekten okunur (bkz. ORDERS_KEY açıklaması).
+  try{
+    const cachedOrders = localStorage.getItem('kdr_shared_'+ORDERS_KEY);
+    DATA.orders = cachedOrders ? JSON.parse(cachedOrders) : (DATA.orders || []);
+  }catch(e){ /* mevcut sipariş listesini koru */ }
   normalizeData();
   try{
     const cartRaw = localStorage.getItem('kdr_local_'+CART_KEY);
@@ -660,9 +692,15 @@ function init(){
 async function loadData(){
   try{
     const res = await storageGet(STORAGE_KEY, true);
-    if(res && res.value){ DATA = JSON.parse(res.value); }
+    if(res && res.value){ const loaded = JSON.parse(res.value); DATA = { ...loaded, orders: DATA ? DATA.orders : undefined }; }
     else if(!DATA){ DATA = defaultData(); await saveData(); }
   }catch(e){ if(!DATA) DATA = defaultData(); }
+  // Siparişler kendi ayrı, küçük dokümanından/anahtarından yüklenir — ürün
+  // fotoğraflarının boyutu bunu asla etkilemez.
+  try{
+    const ores = await storageGet(ORDERS_KEY, true);
+    if(ores && ores.value){ DATA.orders = JSON.parse(ores.value); }
+  }catch(e){ /* mevcut sipariş listesini koru */ }
   normalizeData();
   try{
     const cres = await storageGet(CART_KEY, false);
@@ -673,8 +711,24 @@ async function loadData(){
   startOrderWatcher();
 }
 async function saveData(){
-  try{ const result = await storageSet(STORAGE_KEY, JSON.stringify(DATA), true); if(!result){ showToast('Kaydetme başarısız oldu, tekrar deneyin'); } }
+  // DİKKAT: siparişler kasıtlı olarak bu yazıma dahil edilmez — onlar
+  // saveOrders() ile kendi küçük dokümanına/anahtarına yazılır. Böylece
+  // ürünlere fotoğraf eklemek/çıkarmak sipariş verisini hiç etkilemez ve
+  // bunun tersi de geçerlidir: sipariş eklemek büyük ürün-fotoğraflı
+  // dokümanı yeniden yazmaz.
+  try{
+    const { orders, ...mainData } = DATA;
+    const result = await storageSet(STORAGE_KEY, JSON.stringify(mainData), true);
+    if(!result){ showToast('Kaydetme başarısız oldu, tekrar deneyin'); }
+  }
   catch(e){ console.error('save failed', e); showToast('Kaydetme hatası: veri çok büyük olabilir'); }
+}
+async function saveOrders(){
+  try{
+    const result = await storageSet(ORDERS_KEY, JSON.stringify(DATA.orders || []), true);
+    if(!result){ showToast('Sipariş kaydetme başarısız oldu, tekrar deneyin'); }
+  }
+  catch(e){ console.error('orders save failed', e); showToast('Sipariş kaydetme hatası'); }
 }
 async function saveCart(){
   try{ await storageSet(CART_KEY, JSON.stringify(CART), false); }catch(e){ console.error('cart save failed', e); }
@@ -1496,7 +1550,7 @@ function placeOrder(){
   };
   if(!DATA.orders) DATA.orders=[];
   DATA.orders.unshift(order);
-  saveData();
+  saveOrders();
   if(NOTIF.enabled){ fireOrderNotification(order); NOTIF.lastOrderId = order.id; localStorage.setItem('kdr-notif-last-order', order.id); }
   CART=[]; saveCart();
   VIEW.cartOpen=false;
@@ -1809,7 +1863,7 @@ function adminOrders(){
 async function deleteOrder(id){
   if(!(await appConfirm('Bu siparişi silmek istediğinize emin misiniz?', 'Sil'))) return;
   DATA.orders = DATA.orders.filter(o=>o.id!==id);
-  saveData(); render(); showToast('Sipariş silindi');
+  saveOrders(); render(); showToast('Sipariş silindi');
 }
 
 function setReportView(v){ ADMIN.reportView = v; render(); }
@@ -2161,7 +2215,7 @@ function saveSettings(){
 async function resetAll(){
   if(!(await appConfirm('Tüm veriler sıfırlanacak. Emin misiniz?', 'Sıfırla'))) return;
   DATA = defaultData();
-  saveData(); render(); showToast('Veriler sıfırlandı');
+  saveData(); saveOrders(); render(); showToast('Veriler sıfırlandı');
 }
 
 init();

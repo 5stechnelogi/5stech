@@ -790,6 +790,14 @@ function defaultData(){
 }
 
 function normalizeData(){
+  // Kritik güvence: DATA'nın ana dizileri (bir Firestore parçası henüz gelmediyse veya
+  // eski/eksik bir önbellek okunduysa bile) HER ZAMAN dizi olsun — aksi halde
+  // homeView/render "Cannot read properties of undefined" hatasıyla tüm siteyi
+  // beyaz ekrana düşürüyordu.
+  if(!Array.isArray(DATA.products)) DATA.products = (defaultData().products);
+  if(!Array.isArray(DATA.categories)) DATA.categories = (defaultData().categories);
+  if(!Array.isArray(DATA.promos)) DATA.promos = [];
+  if(!DATA.hero) DATA.hero = defaultData().hero;
   if(DATA.hero && !DATA.hero.images){ DATA.hero.images = DATA.hero.image ? [DATA.hero.image] : []; }
   if(DATA.hero && /^[0-9]+$/.test((DATA.hero.discount||'').trim())){ DATA.hero.discount = '%' + DATA.hero.discount.trim(); }
   if(DATA.hero && !DATA.hero.discountLabel){ DATA.hero.discountLabel = 'İNDİRİM'; }

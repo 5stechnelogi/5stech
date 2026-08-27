@@ -1814,6 +1814,15 @@ function render(){
   if(focusId && (active.tagName==='INPUT'||active.tagName==='TEXTAREA')){
     try{ selStart=active.selectionStart; selEnd=active.selectionEnd; }catch(e){}
   }
+  // Yönetim panelindeki içerik (.admin-main) kendi scroll'una sahip. render() her
+  // çağrıldığında app.innerHTML tamamen yeniden yazıldığı için bu eleman da baştan
+  // oluşturuluyor ve tarayıcı scroll konumunu otomatik olarak sıfırlıyor (en üste
+  // atıyor). Örn. sipariş listesinde "Onayla"/"Hazır" butonuna basınca sayfanın
+  // zıplaması bundan kaynaklanıyordu — burada scroll konumunu kaydedip yeniden
+  // çizimden sonra geri yüklüyoruz.
+  const prevAdminMain = document.querySelector('.admin-main');
+  const adminScrollTop = prevAdminMain ? prevAdminMain.scrollTop : null;
+  const winScrollY = window.scrollY;
   const app = document.getElementById('app');
   let body = VIEW.page==='home' ? homeView() : categoryView();
   app.innerHTML = `
@@ -1832,6 +1841,12 @@ function render(){
       el.focus();
       if(selStart!=null && el.setSelectionRange){ try{ el.setSelectionRange(selStart, selEnd); }catch(e){} }
     }
+  }
+  if(adminScrollTop!=null){
+    const newAdminMain = document.querySelector('.admin-main');
+    if(newAdminMain) newAdminMain.scrollTop = adminScrollTop;
+  } else {
+    window.scrollTo(0, winScrollY);
   }
   attachCardTilt();
   setupHeroSlider();

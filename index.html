@@ -404,7 +404,7 @@
   <svg viewBox="0 0 32 32" width="30" height="30" fill="#fff"><path d="M16.001 3C9.373 3 4 8.373 4 15c0 2.386.7 4.61 1.905 6.474L4 29l7.72-1.865A11.94 11.94 0 0 0 16 27c6.627 0 12-5.373 12-12S22.627 3 16.001 3zm6.938 17.06c-.29.816-1.44 1.5-2.35 1.694-.62.132-1.43.238-4.15-.892-3.48-1.442-5.72-4.955-5.895-5.185-.17-.23-1.412-1.878-1.412-3.583s.878-2.54 1.19-2.888c.31-.348.68-.435.906-.435.226 0 .453.002.652.012.21.01.49-.08.766.585.29.7.99 2.406 1.078 2.582.088.176.146.383.03.612-.117.23-.176.373-.35.573-.176.2-.37.446-.528.6-.176.174-.36.362-.155.71.207.35.918 1.514 1.97 2.452 1.354 1.207 2.494 1.582 2.845 1.76.35.176.554.147.76-.088.207-.235.878-1.024 1.113-1.376.235-.353.47-.294.79-.176.32.117 2.03.958 2.378 1.132.348.176.58.264.665.412.088.147.088.848-.203 1.665z"/></svg>
 </a>
 
-<!-- Firebase (Firestore) — sipariş verisini tüm cihaz/tarayıcılar arasında paylaşmak için -->
+<!-- Firebase (Firestore + Authentication) — sipariş verisini tüm cihaz/tarayıcılar arasında paylaşmak için -->
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
@@ -424,46 +424,38 @@ const firebaseConfig = {
 };
 let firebaseReady = false;
 let storeDocRef = null;
-let ordersDocRef = null;
-/* Firestore güvenlik kuralları genelde "sadece giriş yapmış kullanıcı"
-   (request.auth != null) şartı koyar. Bu site ziyaretçiye görünür bir
-   giriş ekranı sunmadığı için, ziyaretçi adına arka planda SESSİZCE
-   "anonim" bir Firebase Authentication oturumu açılır — ziyaretçi hiçbir
-   şey yapmaz/görmez, sadece request.auth dolu hale gelir. Bu, Firebase
-   Console > Authentication > Sign-in method bölümünden "Anonymous"
-   sağlayıcısının etkinleştirilmiş olmasını GEREKTİRİR; aksi halde (veya
-   auth SDK'sı yüklenemezse) authReadyPromise yine de çözülür ve Firestore
-   istekleri kurallara takılıp "permission-denied" ile başarısız olmaya
-   devam eder — bu durumda yerel önbelleğe (localStorage) düşülür. */
-let authReadyPromise = Promise.resolve();
+/* Firestore güvenlik kuralları "request.auth != null" istiyor (yani sadece giriş
+   yapmış kullanıcılar okuyup yazabiliyor). Sitede ayrı bir müşteri girişi olmadığı
+   için her ziyaretçiyi arka planda GÖRÜNMEZ şekilde "anonim" olarak Firebase'e
+   giriş yaptırıyoruz — kullanıcı hiçbir şey görmez/yapmaz, ama artık Firestore
+   izinleri sağlanmış olur. Bu adım tamamlanmadan Firestore'a okuma/yazma
+   yapılmıyor (aksi halde "permission-denied" hatası alınıp veri sessizce sadece
+   o cihazın localStorage'ına düşüyordu — cihazlar arası senkron çalışmıyordu). */
+let resolveAuthReady;
+const firebaseAuthReadyPromise = new Promise(res=>{ resolveAuthReady = res; });
 try{
   if(firebaseConfig.apiKey && firebaseConfig.apiKey !== 'BURAYA_YAPISTIR' && firebaseConfig.apiKey){
     firebase.initializeApp(firebaseConfig);
     storeDocRef = firebase.firestore().collection('kdr_store').doc('main');
-    /* Siparişler kasıtlı olarak AYRI ve küçük bir dokümanda tutulur.
-       Neden: 'main' dokümanı ürün fotoğraflarını (base64) içerir ve
-       Firestore'da tek bir alanın izin verdiği ~1MB sınırına yaklaşabilir/
-       aşabilir (bkz. "longer than 1048487 bytes" hatası). Eğer siparişler de
-       aynı dokümanda tutulsaydı, ürün fotoğrafları yüzünden doküman sınırı
-       aşıldığında sipariş yazma işlemi de (genelde sessizce) başarısız
-       olurdu — özellikle telefondan, daha büyük veri paketiyle sipariş
-       eklendiğinde. Siparişleri kendi küçük dokümanında tutmak, kaç ürün
-       fotoğrafı olursa olsun sipariş akışının hiçbir zaman tıkanmamasını
-       sağlar. */
-    ordersDocRef = firebase.firestore().collection('kdr_store').doc('orders');
     firebaseReady = true;
-    authReadyPromise = firebase.auth().signInAnonymously()
-      .catch(function(e){ console.error('Anonim giriş hatası (Firebase Console > Authentication > Sign-in method > Anonymous etkin mi?)', e); });
+    firebase.auth().onAuthStateChanged(function(user){
+      if(user){ resolveAuthReady(); }
+      else{
+        firebase.auth().signInAnonymously().catch(function(err){
+          console.error('Firebase anonim giriş hatası (Authentication > Sign-in method > Anonymous etkin mi kontrol edin):', err);
+          resolveAuthReady(); // yine de devam et (localStorage'a düşecek)
+        });
+      }
+    }, function(err){ console.error('Firebase auth dinleme hatası', err); resolveAuthReady(); });
+  } else {
+    resolveAuthReady();
   }
-}catch(e){ console.error('Firebase başlatma hatası', e); }
+}catch(e){ console.error('Firebase başlatma hatası', e); resolveAuthReady(); }
 </script>
+
 
 <script>
 const STORAGE_KEY = 'kdr-store-data-v2';
-/* Siparişler artık STORAGE_KEY'in içindeki DATA nesnesinde DEĞİL, kendi
-   ayrı ve küçük dokümanında/anahtarında tutulur — bkz. yukarıdaki
-   ordersDocRef açıklaması. */
-const ORDERS_KEY = 'kdr-store-orders-v1';
 const CART_KEY = 'kdr-cart-v1';
 const ADMIN_PASS = '5s2563';
 let DATA = null;
@@ -529,8 +521,8 @@ function fireOrderNotification(order){
     n.onclick = function(){ window.focus(); };
   }catch(e){}
 }
-function handleFreshOrdersSnapshot(orders){
-  orders = orders || [];
+function handleFreshStoreSnapshot(fresh){
+  const orders = fresh.orders || [];
   if(orders.length){
     const latestId = orders[0].id;
     if(NOTIF.enabled && NOTIF.lastOrderId && latestId !== NOTIF.lastOrderId){
@@ -545,35 +537,30 @@ function handleFreshOrdersSnapshot(orders){
   }
   // Canlı senkron: aktif bir yazı alanına yazılırken veya bir ürün/kategori
   // düzenleme formu açıkken üzerine yazmayı önlemek dışında, gelen veriyi
-  // her zaman uygula (sadece "Siparişler" sekmesiyle sınırlı değil). Not:
-  // sadece DATA.orders güncellenir — ürünler/kategoriler/ayarlar gibi diğer
-  // paylaşımlı veriler artık bu dokümanda olmadığı için dokunulmaz.
+  // her zaman uygula (sadece "Siparişler" sekmesiyle sınırlı değil).
   const active = document.activeElement;
   const isTyping = active && (active.tagName==='INPUT'||active.tagName==='TEXTAREA') && document.body.contains(active);
   if(!isTyping && !ADMIN.editingProduct){
-    DATA.orders = orders;
+    DATA = fresh;
+    normalizeData();
     render();
   }
 }
 let unsubscribeOrders = null;
 async function startOrderWatcher(){
   if(unsubscribeOrders){ unsubscribeOrders(); unsubscribeOrders=null; }
-  if(!firebaseReady || !ordersDocRef) return;
-  // Dinlemeye başlamadan önce (varsa) anonim girişin tamamlanmasını bekle —
-  // aksi halde ilk istek request.auth henüz boşken gidip kurallara takılabilir.
-  await authReadyPromise;
-  // Firestore gerçek zamanlı dinleyici — küçük ve ayrı 'orders' dokümanını
-  // dinler (ürün fotoğraflarını içeren 'main' dokümanını değil). Sipariş
-  // verilir verilmez (saniyeler içinde, 20sn'lik kontrol beklemeden) bu
-  // tarayıcıya haber gelir — bildirimler kapalı olsa bile veri her zaman
-  // canlı senkronize olur.
-  unsubscribeOrders = ordersDocRef.onSnapshot(function(snap){
+  if(!firebaseReady || !storeDocRef) return;
+  await firebaseAuthReadyPromise;
+  // Firestore gerçek zamanlı dinleyici: sipariş verilir verilmez (saniyeler içinde,
+  // 20sn'lik kontrol beklemeden) bu tarayıcıya haber gelir — bildirimler kapalı
+  // olsa bile veri her zaman canlı senkronize olur.
+  unsubscribeOrders = storeDocRef.onSnapshot(function(snap){
     if(!snap.exists) return;
     const val = snap.data().value;
     if(!val) return;
     let fresh;
     try{ fresh = JSON.parse(val); }catch(e){ return; }
-    handleFreshOrdersSnapshot(fresh);
+    handleFreshStoreSnapshot(fresh);
   }, function(err){ console.error('Firestore dinleme hatası', err); });
 }
 
@@ -590,13 +577,6 @@ function uuid(){ return (window.crypto && crypto.randomUUID) ? crypto.randomUUID
    tutuluyor (paylaşılmasına gerek yok). window.storage varsa (Claude önizlemesi) o
    önceliklidir; yoksa Firestore denenir; o da başarısız olursa (ör. henüz
    firebaseConfig doldurulmadıysa) localStorage'a düşer. ---------- */
-/* Hangi anahtarın hangi Firestore dokümanına yazılacağını belirler.
-   Siparişler (ORDERS_KEY) kendi küçük 'orders' dokümanına, geri kalan her
-   şey (ürünler/kategoriler/ayarlar/bannerlar, STORAGE_KEY) 'main' dokümanına
-   gider — böylece büyük ürün fotoğrafları sipariş yazmasını asla etkilemez. */
-function firestoreDocFor(key){
-  return key === ORDERS_KEY ? ordersDocRef : storeDocRef;
-}
 async function storageGet(key, shared){
   try{
     if(window.storage && typeof window.storage.get==='function'){
@@ -604,11 +584,10 @@ async function storageGet(key, shared){
       if(r) return r;
     }
   }catch(e){ /* devam et */ }
-  const docRef = firestoreDocFor(key);
-  if(shared && firebaseReady && docRef){
+  if(shared && firebaseReady && storeDocRef){
     try{
-      await authReadyPromise;
-      const snap = await docRef.get();
+      await firebaseAuthReadyPromise;
+      const snap = await storeDocRef.get();
       if(snap.exists){
         const val = snap.data().value;
         if(val) return { key, value:val, shared };
@@ -628,11 +607,10 @@ async function storageSet(key, value, shared){
       if(r) ok = true;
     }
   }catch(e){ /* devam et */ }
-  const docRef = firestoreDocFor(key);
-  if(shared && firebaseReady && docRef){
+  if(shared && firebaseReady && storeDocRef){
     try{
-      await authReadyPromise;
-      await docRef.set({ value: value, updatedAt: Date.now() });
+      await firebaseAuthReadyPromise;
+      await storeDocRef.set({ value: value, updatedAt: Date.now() });
       ok = true;
     }catch(e){ console.error('Firestore yazma hatası', e); }
   }
@@ -696,11 +674,6 @@ function init(){
     const cached = localStorage.getItem('kdr_shared_'+STORAGE_KEY);
     DATA = cached ? JSON.parse(cached) : defaultData();
   }catch(e){ DATA = defaultData(); }
-  // Siparişler ayrı bir yerel önbellekten okunur (bkz. ORDERS_KEY açıklaması).
-  try{
-    const cachedOrders = localStorage.getItem('kdr_shared_'+ORDERS_KEY);
-    DATA.orders = cachedOrders ? JSON.parse(cachedOrders) : (DATA.orders || []);
-  }catch(e){ /* mevcut sipariş listesini koru */ }
   normalizeData();
   try{
     const cartRaw = localStorage.getItem('kdr_local_'+CART_KEY);
@@ -712,15 +685,9 @@ function init(){
 async function loadData(){
   try{
     const res = await storageGet(STORAGE_KEY, true);
-    if(res && res.value){ const loaded = JSON.parse(res.value); DATA = { ...loaded, orders: DATA ? DATA.orders : undefined }; }
+    if(res && res.value){ DATA = JSON.parse(res.value); }
     else if(!DATA){ DATA = defaultData(); await saveData(); }
   }catch(e){ if(!DATA) DATA = defaultData(); }
-  // Siparişler kendi ayrı, küçük dokümanından/anahtarından yüklenir — ürün
-  // fotoğraflarının boyutu bunu asla etkilemez.
-  try{
-    const ores = await storageGet(ORDERS_KEY, true);
-    if(ores && ores.value){ DATA.orders = JSON.parse(ores.value); }
-  }catch(e){ /* mevcut sipariş listesini koru */ }
   normalizeData();
   try{
     const cres = await storageGet(CART_KEY, false);
@@ -731,24 +698,8 @@ async function loadData(){
   startOrderWatcher();
 }
 async function saveData(){
-  // DİKKAT: siparişler kasıtlı olarak bu yazıma dahil edilmez — onlar
-  // saveOrders() ile kendi küçük dokümanına/anahtarına yazılır. Böylece
-  // ürünlere fotoğraf eklemek/çıkarmak sipariş verisini hiç etkilemez ve
-  // bunun tersi de geçerlidir: sipariş eklemek büyük ürün-fotoğraflı
-  // dokümanı yeniden yazmaz.
-  try{
-    const { orders, ...mainData } = DATA;
-    const result = await storageSet(STORAGE_KEY, JSON.stringify(mainData), true);
-    if(!result){ showToast('Kaydetme başarısız oldu, tekrar deneyin'); }
-  }
+  try{ const result = await storageSet(STORAGE_KEY, JSON.stringify(DATA), true); if(!result){ showToast('Kaydetme başarısız oldu, tekrar deneyin'); } }
   catch(e){ console.error('save failed', e); showToast('Kaydetme hatası: veri çok büyük olabilir'); }
-}
-async function saveOrders(){
-  try{
-    const result = await storageSet(ORDERS_KEY, JSON.stringify(DATA.orders || []), true);
-    if(!result){ showToast('Sipariş kaydetme başarısız oldu, tekrar deneyin'); }
-  }
-  catch(e){ console.error('orders save failed', e); showToast('Sipariş kaydetme hatası'); }
 }
 async function saveCart(){
   try{ await storageSet(CART_KEY, JSON.stringify(CART), false); }catch(e){ console.error('cart save failed', e); }
@@ -1570,7 +1521,7 @@ function placeOrder(){
   };
   if(!DATA.orders) DATA.orders=[];
   DATA.orders.unshift(order);
-  saveOrders();
+  saveData();
   if(NOTIF.enabled){ fireOrderNotification(order); NOTIF.lastOrderId = order.id; localStorage.setItem('kdr-notif-last-order', order.id); }
   CART=[]; saveCart();
   VIEW.cartOpen=false;
@@ -1883,7 +1834,7 @@ function adminOrders(){
 async function deleteOrder(id){
   if(!(await appConfirm('Bu siparişi silmek istediğinize emin misiniz?', 'Sil'))) return;
   DATA.orders = DATA.orders.filter(o=>o.id!==id);
-  saveOrders(); render(); showToast('Sipariş silindi');
+  saveData(); render(); showToast('Sipariş silindi');
 }
 
 function setReportView(v){ ADMIN.reportView = v; render(); }
@@ -2235,7 +2186,7 @@ function saveSettings(){
 async function resetAll(){
   if(!(await appConfirm('Tüm veriler sıfırlanacak. Emin misiniz?', 'Sıfırla'))) return;
   DATA = defaultData();
-  saveData(); saveOrders(); render(); showToast('Veriler sıfırlandı');
+  saveData(); render(); showToast('Veriler sıfırlandı');
 }
 
 init();

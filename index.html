@@ -2,6 +2,8 @@
 
 
 
+
+
 <!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -767,6 +769,7 @@ async function storageGet(key, shared){
 }
 async function storageSet(key, value, shared){
   let ok = false;
+  let cloudError = null;
   try{
     if(window.storage && typeof window.storage.set==='function'){
       const r = await window.storage.set(key, value, shared);
@@ -789,12 +792,6 @@ async function storageSet(key, value, shared){
         const categories = obj.categories;
         const rest = Object.assign({}, obj);
         delete rest.products; delete rest.orders; delete rest.hero; delete rest.promos; delete rest.categories;
-        await Promise.all([
-          storeDocRef.set({ value: JSON.stringify(rest), updatedAt: Date.now() }),
-          heroDocRef.set({ value: JSON.stringify(hero||{}), updatedAt: Date.now() }),
-          promosDocRef.set({ value: JSON.stringify(promos||[]), updatedAt: Date.now() }),
-          categoriesDocRef.set({ value: JSON.stringify(categories||[]), updatedAt: Date.now() })
-        ]);
         const db = firebase.firestore();
         const existingSnap = await productsColRef.get();
         const existingIds = new Set(existingSnap.docs.map(d=>d.id));
@@ -810,17 +807,31 @@ async function storageSet(key, value, shared){
           if(!currentIds.has(id)){ batch.delete(productsColRef.doc(id)); opCount++; if(opCount>=400){ await batch.commit(); batch = db.batch(); opCount=0; } }
         }
         if(opCount>0) await batch.commit();
+        // ÖNEMLİ: ürün koleksiyonundaki değişiklikler (ekleme/silme) Firestore'a TAMAMEN
+        // yazılıp bittikten SONRA ana/hero/promo/kategori dokümanlarını yazıyoruz. Bu
+        // dokümanlardaki her değişiklik canlı dinleyicileri (onSnapshot) anında tetikler
+        // ve dinleyici tüm veriyi (ürünler dahil) Firestore'dan yeniden okur. Eğer bu
+        // dokümanlar ürün yazımından ÖNCE yazılsaydı, dinleyici ürün silme/ekleme henüz
+        // işlenmeden tetiklenir, eski (silinmemiş) ürün listesini geri getirip ekrandaki
+        // güncel hâlin üzerine yazardı — silinen bir ürünün "geri gelmesi" tam olarak bu
+        // yüzden oluyordu.
+        await Promise.all([
+          storeDocRef.set({ value: JSON.stringify(rest), updatedAt: Date.now() }),
+          heroDocRef.set({ value: JSON.stringify(hero||{}), updatedAt: Date.now() }),
+          promosDocRef.set({ value: JSON.stringify(promos||[]), updatedAt: Date.now() }),
+          categoriesDocRef.set({ value: JSON.stringify(categories||[]), updatedAt: Date.now() })
+        ]);
       } else {
         await storeDocRef.set({ value: value, updatedAt: Date.now() });
       }
       ok = true;
-    }catch(e){ console.error('Firestore yazma hatası', e); }
+    }catch(e){ console.error('Firestore yazma hatası', e); cloudError = e; }
   }
   try{
     localStorage.setItem((shared?'kdr_shared_':'kdr_local_')+key, value);
     ok = true;
   }catch(e){ /* storage full or unavailable */ }
-  return ok ? {key, value, shared} : null;
+  return ok ? {key, value, shared, cloudError} : null;
 }
 
 function defaultData(){
@@ -921,6 +932,13 @@ async function saveData(){
     const json = JSON.stringify(DATA);
     const result = await storageSet(STORAGE_KEY, json, true);
     if(!result){ showToast('Kaydetme başarısız oldu, tekrar deneyin'); }
+    else if(result.cloudError){
+      // Yerelde kaydedildi ama buluta (Firestore'a) yazılamadı — bu durumda başka bir
+      // cihaz/tarayıcı bu değişikliği GÖRMEZ, o yüzden kullanıcıyı açıkça uyarıyoruz
+      // (önceden bu sessizce yutuluyordu ve sorun fark edilemiyordu).
+      const msg = String(result.cloudError.message||result.cloudError);
+      showToast('Bulut kaydı başarısız: ' + msg.slice(0,120));
+    }
   }
   catch(e){ console.error('save failed', e); showToast('Kaydetme hatası'); }
 }
@@ -1013,14 +1031,21 @@ function onCardTiltLeave(e){
 }
 
 /* ---------- image upload ---------- */
-/* Hedef: ~1MB'a kadar dosya boyutuna izin ver, çözünürlüğü olabildiğince yüksek tut.
-   Önce büyük boyutta (maxDim'e göre) yüksek kalitede sıkıştırır, 1MB'ı aşarsa
-   kaliteyi kademeli düşürerek hedefe yaklaşır; kalite dibe vurursa boyutu küçültür. */
-const IMG_TARGET_BYTES = 260 * 1024; // ~260KB (data URL boyutu, base64 dahil) — Firestore'a
-// yerel yedek olarak gömülen fotoğrafların, birden fazla görsel bir arada olsa bile
-// dokümanı şişirmemesi için düşük tutulur. Firebase Storage/Vercel Blob'a başarıyla
-// yüklenen fotoğraflar bu sınırdan etkilenmez (gerçek dosya, sadece küçük bir bağlantı
-// Firestore'a kaydedilir).
+/* Hedef: çözünürlüğü/kaliteyi olabildiğince yüksek tut, ama Firestore'un doküman
+   başına 1MB (1.048.576 byte) sert limitini ASLA aşma.
+   Önce büyük boyutta (maxDim'e göre) yüksek kalitede sıkıştırır, bütçeyi aşarsa
+   kaliteyi kademeli düşürerek hedefe yaklaşır; kalite dibe vurursa boyutu küçültür.
+
+   ÖNEMLİ: Bazı alanlar (Hero banner'daki 5 slayt fotoğrafı, 2 promosyon banner'ı,
+   kategori simgeleri) aynı Firestore dokümanını PAYLAŞIR — yani o dokümandaki TÜM
+   görsellerin toplamı 1MB'ın altında kalmalı, tek görsel değil. Bu yüzden hedef byte
+   sayısı sabit değil: aynı dokümanı paylaşan, o an dolu olan görsel sayısına göre
+   dinamik olarak paylaştırılıyor (az görsel = yüksek kalite, çok görsel = daha
+   sıkı sıkıştırma). Yeni bir görsel eklendiğinde, aynı dokümandaki diğer görseller
+   de yeni (daha düşük) paya göre otomatik olarak yeniden sıkıştırılır ki doküman
+   asla 1MB sınırını aşıp sessizce kayıt hatası vermesin. */
+const DOC_BUDGET_BYTES = 950 * 1024; // ~950KB — 1MB limitine karşı güvenlik payı bırakır.
+const IMG_TARGET_BYTES = DOC_BUDGET_BYTES; // tek görselli alanlar (ürün, logo vb.) için tavan.
 
 function dataUrlBytes(dataUrl){
   // base64 kısmının yaklaşık byte karşılığı
@@ -1028,9 +1053,10 @@ function dataUrlBytes(dataUrl){
   return Math.round(b64.length * 0.75);
 }
 
-function compressToTarget(img){
-  // Adım 1: makul bir üst sınır içinde orijinal çözünürlüğe olabildiğince yakın başla
-  const maxDim = 2200; // yüksek çözünürlük üst sınırı (aşırı büyük fotoğraflar için)
+function compressToTarget(img, targetBytes){
+  const target = targetBytes || IMG_TARGET_BYTES;
+  // Adım 1: yüksek çözünürlüğü koru — sadece aşırı büyük fotoğrafları sınırla
+  const maxDim = 3600; // yüksek çözünürlük üst sınırı (aşırı büyük fotoğraflar için)
   let w = img.width, h = img.height;
   if(w > maxDim || h > maxDim){
     if(w >= h){ h = Math.round(h * maxDim / w); w = maxDim; }
@@ -1049,17 +1075,17 @@ function compressToTarget(img){
 
   render(w, h);
 
-  // Adım 2: kaliteyi kademeli düşürerek 1MB hedefine yaklaş
-  let quality = 0.92;
+  // Adım 2: yüksek kaliteden başla, hedefin altındaysak kaliteyi düşürmeye gerek yok
+  let quality = 0.97;
   dataUrl = canvas.toDataURL('image/jpeg', quality);
-  while(dataUrlBytes(dataUrl) > IMG_TARGET_BYTES && quality > 0.5){
-    quality -= 0.08;
+  while(dataUrlBytes(dataUrl) > target && quality > 0.5){
+    quality -= 0.06;
     dataUrl = canvas.toDataURL('image/jpeg', quality);
   }
 
-  // Adım 3: kalite dibe vurduysa (0.5) ve hâlâ 1MB üzerindeyse boyutu küçültmeye başla
+  // Adım 3: kalite dibe vurduysa ve hâlâ hedefin üzerindeyse boyutu küçültmeye başla
   let tries = 0;
-  while(dataUrlBytes(dataUrl) > IMG_TARGET_BYTES && tries < 6){
+  while(dataUrlBytes(dataUrl) > target && tries < 8){
     w = Math.round(w * 0.85); h = Math.round(h * 0.85);
     render(w, h);
     dataUrl = canvas.toDataURL('image/jpeg', 0.8);
@@ -1069,76 +1095,101 @@ function compressToTarget(img){
   return dataUrl;
 }
 
+// Aynı Firestore dokümanını paylaşan diğer hidden-input id'lerini bulur
+// (hero: h-img-0..4, promo: p-img-0..1, kategori: c-img-0..n). Diğer tüm
+// alanlar (ürün fotoğrafı, logo vb.) tek başına kendi dokümanında olduğu
+// için sadece kendi id'sini döndürür.
+function siblingSlotIds(hiddenId){
+  const m = hiddenId.match(/^([a-z]+)-img-(\d+)$/);
+  if(!m) return [hiddenId];
+  const prefix = m[1];
+  if(prefix !== 'h' && prefix !== 'p' && prefix !== 'c') return [hiddenId];
+  const ids = [];
+  document.querySelectorAll(`input[type="hidden"][id^="${prefix}-img-"]`).forEach(el=>{
+    if(new RegExp(`^${prefix}-img-\\d+$`).test(el.id)) ids.push(el.id);
+  });
+  return ids.length ? ids : [hiddenId];
+}
+function previewIdFor(hiddenId){
+  const m = hiddenId.match(/^([a-z]+)-img-(\d+)$/);
+  return m ? `${m[1]}-img-preview-${m[2]}` : null;
+}
+function isDataUrl(v){ return !!v && v.startsWith('data:'); }
+
+// hiddenId için o an geçerli olan bütçeyi hesaplar: dokümanı paylaşan, o an
+// dolu (base64) olan slotların sayısına göre bütçeyi eşit paylaştırır.
+function currentBudgetFor(hiddenId){
+  const ids = siblingSlotIds(hiddenId);
+  if(ids.length <= 1) return DOC_BUDGET_BYTES;
+  const filled = new Set(ids.filter(id=>{
+    const el = document.getElementById(id);
+    return el && isDataUrl(el.value);
+  }));
+  filled.add(hiddenId); // yeni yüklenecek görsel de bütçeye dahil
+  return Math.max(Math.floor(DOC_BUDGET_BYTES / filled.size), 40 * 1024);
+}
+
+// Yeni bir görsel eklenince, aynı dokümanı paylaşan diğer görseller yeni
+// (daha düşük) payın üzerindeyse sessizce yeniden sıkıştırır — böylece
+// doküman toplamı her zaman 1MB sınırının altında kalır.
+async function rebalanceSiblingImages(justUploadedId){
+  const ids = siblingSlotIds(justUploadedId);
+  if(ids.length <= 1) return;
+  const filled = ids.filter(id=>{
+    const el = document.getElementById(id);
+    return el && isDataUrl(el.value);
+  });
+  if(filled.length <= 1) return;
+  const budgetEach = Math.max(Math.floor(DOC_BUDGET_BYTES / filled.length), 40 * 1024);
+  for(const id of filled){
+    if(id === justUploadedId) continue; // bu zaten doğru bütçeyle sıkıştırıldı
+    const el = document.getElementById(id);
+    if(!el || dataUrlBytes(el.value) <= budgetEach) continue;
+    await new Promise(resolve=>{
+      const img = new Image();
+      img.onload = () => {
+        el.value = compressToTarget(img, budgetEach);
+        const pid = previewIdFor(id);
+        const p = pid && document.getElementById(pid);
+        if(p) p.style.backgroundImage = `url(${el.value})`;
+        resolve();
+      };
+      img.onerror = resolve;
+      img.src = el.value;
+    });
+  }
+}
+
 function handleImageFile(event, hiddenId, previewId){
   const file = event.target.files[0];
   if(!file) return;
   if(!file.type.startsWith('image/')){ showToast('Lütfen bir görsel dosyası seçin'); return; }
   const hidden = document.getElementById(hiddenId);
   const prev = document.getElementById(previewId);
-  showToast('Fotoğraf yükleniyor...');
-
-  function localFallback(reasonLabel){
-    const reader = new FileReader();
-    reader.onload = e => {
-      const img = new Image();
-      img.onload = () => {
-        const dataUrl = compressToTarget(img);
-        if(hidden) hidden.value = dataUrl;
-        if(prev){ prev.style.backgroundImage = `url(${dataUrl})`; prev.textContent=''; }
-        const kb = Math.round(dataUrlBytes(dataUrl)/1024);
-        showToast(`Fotoğraf yüklendi (yerel, ~${kb}KB) — dikkat: bulut depolama çalışmıyor, çok fazla yerel fotoğraf eklerseniz kaydetme hata verebilir`);
-      };
-      img.onerror = () => showToast('Görsel okunamadı, farklı bir dosya deneyin');
-      img.src = e.target.result;
+  showToast('Fotoğraf işleniyor...');
+  // Fotoğraf, hiçbir dış sunucuya/bulut hizmetine bağımlı olmadan doğrudan bu
+  // tarayıcıda sıkıştırılıp Firestore dokümanına gömülüyor. Firebase Storage burada
+  // KULLANILMIYOR çünkü ücretsiz (Spark) planda Storage etkin değil; ona bağımlı olmak
+  // "Fotoğraf yükleniyor..." ekranında sonsuza dek takılı kalmaya yol açardı.
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = async () => {
+      const budget = currentBudgetFor(hiddenId);
+      const dataUrl = compressToTarget(img, budget);
+      if(hidden) hidden.value = dataUrl;
+      if(prev){ prev.style.backgroundImage = `url(${dataUrl})`; prev.textContent=''; }
+      const kb = Math.round(dataUrlBytes(dataUrl)/1024);
+      showToast(`Fotoğraf yüklendi (~${kb}KB)`);
+      await rebalanceSiblingImages(hiddenId);
     };
-    reader.onerror = () => showToast('Dosya okunamadı');
-    reader.readAsDataURL(file);
-  }
-
-  // Öncelik 1: Firebase Storage'a gerçek dosya olarak yükle (tam çözünürlük, Firestore
-  // dokümanını şişirmez — sadece küçük bir bağlantı adresi kaydedilir).
-  // Öncelik 2: Vercel Blob (varsa /api/upload uç noktası).
-  // Son çare: yerel sıkıştırma + data URL (Firestore'a doğrudan gömülür, sınırlı boyut).
-  uploadToFirebaseStorage(file)
-    .then(url => {
-      if(hidden) hidden.value = url;
-      if(prev){ prev.style.backgroundImage = `url(${url})`; prev.textContent=''; }
-      showToast('Fotoğraf yüklendi (Firebase Storage)');
-    })
-    .catch(err => {
-      console.warn('Firebase Storage yükleme kullanılamadı, Vercel Blob deneniyor:', err);
-      uploadToBlob(file)
-        .then(url => {
-          if(hidden) hidden.value = url;
-          if(prev){ prev.style.backgroundImage = `url(${url})`; prev.textContent=''; }
-          showToast('Fotoğraf yüklendi (Vercel Blob)');
-        })
-        .catch(err2 => {
-          console.warn('Blob yükleme de kullanılamadı, yerel sıkıştırmaya dönülüyor:', err2);
-          localFallback();
-        });
-    });
+    img.onerror = () => showToast('Görsel okunamadı, farklı bir dosya deneyin');
+    img.src = e.target.result;
+  };
+  reader.onerror = () => showToast('Dosya okunamadı');
+  reader.readAsDataURL(file);
 }
 
-async function uploadToFirebaseStorage(file){
-  if(!firebaseReady || !firebaseStorageRef) throw new Error('Firebase Storage kullanılamıyor');
-  await firebaseAuthReadyPromise;
-  const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g,'_');
-  const path = 'uploads/' + Date.now() + '-' + Math.random().toString(36).slice(2) + '-' + safeName;
-  const fileRef = firebaseStorageRef.child(path);
-  const snapshot = await fileRef.put(file);
-  const url = await snapshot.ref.getDownloadURL();
-  return url;
-}
-
-async function uploadToBlob(file){
-  const { upload } = await import('https://esm.sh/@vercel/blob@0.27.0/client');
-  const blob = await upload(file.name, file, {
-    access: 'public',
-    handleUploadUrl: '/api/upload',
-  });
-  return blob.url;
-}
 function updateImgPreviewFromUrl(url, previewId){
   const p = document.getElementById(previewId);
   if(!p) return;

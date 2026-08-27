@@ -1,5 +1,6 @@
 
 
+
 <!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -406,6 +407,7 @@
 <!-- Firebase (Firestore) — sipariş verisini tüm cihaz/tarayıcılar arasında paylaşmak için -->
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
 <script>
 /* ============ FIREBASE AYARI ============
    Firebase Console > Proje Ayarları > Genel > "Web uygulaması ekle" bölümünden
@@ -423,6 +425,17 @@ const firebaseConfig = {
 let firebaseReady = false;
 let storeDocRef = null;
 let ordersDocRef = null;
+/* Firestore güvenlik kuralları genelde "sadece giriş yapmış kullanıcı"
+   (request.auth != null) şartı koyar. Bu site ziyaretçiye görünür bir
+   giriş ekranı sunmadığı için, ziyaretçi adına arka planda SESSİZCE
+   "anonim" bir Firebase Authentication oturumu açılır — ziyaretçi hiçbir
+   şey yapmaz/görmez, sadece request.auth dolu hale gelir. Bu, Firebase
+   Console > Authentication > Sign-in method bölümünden "Anonymous"
+   sağlayıcısının etkinleştirilmiş olmasını GEREKTİRİR; aksi halde (veya
+   auth SDK'sı yüklenemezse) authReadyPromise yine de çözülür ve Firestore
+   istekleri kurallara takılıp "permission-denied" ile başarısız olmaya
+   devam eder — bu durumda yerel önbelleğe (localStorage) düşülür. */
+let authReadyPromise = Promise.resolve();
 try{
   if(firebaseConfig.apiKey && firebaseConfig.apiKey !== 'BURAYA_YAPISTIR' && firebaseConfig.apiKey){
     firebase.initializeApp(firebaseConfig);
@@ -439,6 +452,8 @@ try{
        sağlar. */
     ordersDocRef = firebase.firestore().collection('kdr_store').doc('orders');
     firebaseReady = true;
+    authReadyPromise = firebase.auth().signInAnonymously()
+      .catch(function(e){ console.error('Anonim giriş hatası (Firebase Console > Authentication > Sign-in method > Anonymous etkin mi?)', e); });
   }
 }catch(e){ console.error('Firebase başlatma hatası', e); }
 </script>
@@ -541,9 +556,12 @@ function handleFreshOrdersSnapshot(orders){
   }
 }
 let unsubscribeOrders = null;
-function startOrderWatcher(){
+async function startOrderWatcher(){
   if(unsubscribeOrders){ unsubscribeOrders(); unsubscribeOrders=null; }
   if(!firebaseReady || !ordersDocRef) return;
+  // Dinlemeye başlamadan önce (varsa) anonim girişin tamamlanmasını bekle —
+  // aksi halde ilk istek request.auth henüz boşken gidip kurallara takılabilir.
+  await authReadyPromise;
   // Firestore gerçek zamanlı dinleyici — küçük ve ayrı 'orders' dokümanını
   // dinler (ürün fotoğraflarını içeren 'main' dokümanını değil). Sipariş
   // verilir verilmez (saniyeler içinde, 20sn'lik kontrol beklemeden) bu
@@ -589,6 +607,7 @@ async function storageGet(key, shared){
   const docRef = firestoreDocFor(key);
   if(shared && firebaseReady && docRef){
     try{
+      await authReadyPromise;
       const snap = await docRef.get();
       if(snap.exists){
         const val = snap.data().value;
@@ -612,6 +631,7 @@ async function storageSet(key, value, shared){
   const docRef = firestoreDocFor(key);
   if(shared && firebaseReady && docRef){
     try{
+      await authReadyPromise;
       await docRef.set({ value: value, updatedAt: Date.now() });
       ok = true;
     }catch(e){ console.error('Firestore yazma hatası', e); }

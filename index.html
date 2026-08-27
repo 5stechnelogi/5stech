@@ -1,6 +1,5 @@
 
 
-
 <!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -425,8 +424,12 @@ const firebaseConfig = {
 };
 let firebaseReady = false;
 let storeDocRef = null;
+let heroDocRef = null;
+let promosDocRef = null;
+let categoriesDocRef = null;
 let firebaseStorageRef = null;
 let ordersColRef = null;
+let productsColRef = null;
 /* Firestore güvenlik kuralları "request.auth != null" istiyor (yani sadece giriş
    yapmış kullanıcılar okuyup yazabiliyor). Sitede ayrı bir müşteri girişi olmadığı
    için her ziyaretçiyi arka planda GÖRÜNMEZ şekilde "anonim" olarak Firebase'e
@@ -440,7 +443,11 @@ try{
   if(firebaseConfig.apiKey && firebaseConfig.apiKey !== 'BURAYA_YAPISTIR' && firebaseConfig.apiKey){
     firebase.initializeApp(firebaseConfig);
     storeDocRef = firebase.firestore().collection('kdr_store').doc('main');
+    heroDocRef = firebase.firestore().collection('kdr_store').doc('hero');
+    promosDocRef = firebase.firestore().collection('kdr_store').doc('promos');
+    categoriesDocRef = firebase.firestore().collection('kdr_store').doc('categories');
     ordersColRef = firebase.firestore().collection('kdr_orders');
+    productsColRef = firebase.firestore().collection('kdr_products');
     firebaseReady = true;
     try{ firebaseStorageRef = firebase.storage().ref(); }catch(e){ console.error('Firebase Storage başlatma hatası (Storage etkinleştirilmemiş olabilir):', e); }
     firebase.auth().onAuthStateChanged(function(user){
@@ -592,6 +599,7 @@ async function startOrdersColWatcher(){
     mergeIncomingOrders(incoming);
   }, function(err){ console.error('Sipariş koleksiyonu dinleme hatası', err); });
 }
+let ordersRenderTimer = null;
 function mergeIncomingOrders(incoming){
   if(!DATA) return;
   if(!DATA.orders) DATA.orders = [];
@@ -602,11 +610,20 @@ function mergeIncomingOrders(incoming){
   const changed = JSON.stringify(merged.map(o=>o.id)) !== JSON.stringify(DATA.orders.map(o=>o.id));
   if(!changed) return;
   notifyNewOrders(merged);
-  const active = document.activeElement;
-  const isTyping = active && (active.tagName==='INPUT'||active.tagName==='TEXTAREA') && document.body.contains(active);
   DATA.orders = merged;
-  try{ localStorage.setItem('kdr_shared_'+STORAGE_KEY, JSON.stringify(DATA)); }catch(e){}
-  if(!isTyping && !ADMIN.editingProduct){ render(); }
+  // Çok sayıda sipariş çok kısa sürede (arka arkaya) gelirse, Firestore her birinde ayrı
+  // bir bildirim tetikler; her seferinde tüm sayfayı yeniden çizmek (render()) tarayıcıyı
+  // kilitleyebilir. Bu yüzden art arda gelen olayları 500ms içinde TEK bir yeniden çizime
+  // topluyoruz (debounce) — bildirimler yine anında gelir, sadece ekran güncellemesi
+  // gruplanır.
+  if(ordersRenderTimer) clearTimeout(ordersRenderTimer);
+  ordersRenderTimer = setTimeout(function(){
+    ordersRenderTimer = null;
+    try{ localStorage.setItem('kdr_shared_'+STORAGE_KEY, JSON.stringify(DATA)); }catch(e){}
+    const active = document.activeElement;
+    const isTyping = active && (active.tagName==='INPUT'||active.tagName==='TEXTAREA') && document.body.contains(active);
+    if(!isTyping && !ADMIN.editingProduct){ render(); }
+  }, 500);
 }
 async function syncOrderToFirestore(order){
   if(!firebaseReady || !ordersColRef) return;
@@ -646,10 +663,29 @@ async function storageGet(key, shared){
   if(shared && firebaseReady && storeDocRef){
     try{
       await firebaseAuthReadyPromise;
-      const snap = await storeDocRef.get();
-      if(snap.exists){
-        const val = snap.data().value;
-        if(val) return { key, value:val, shared };
+      if(key === STORAGE_KEY && productsColRef){
+        // Katalog verisi Firestore'da bölünmüş halde tutuluyor: ürünler kendi
+        // koleksiyonunda (kdr_products, ürün başına 1 doküman), hero/promo/kategori
+        // her biri kendi küçük dokümanında, geri kalanı (logo/ayarlar/müşteriler)
+        // ana dokümanda. Burada hepsini birleştirip tek bir DATA nesnesi gibi
+        // geri döndürüyoruz.
+        const [mainSnap, heroSnap, promosSnap, catSnap, prodSnap] = await Promise.all([
+          storeDocRef.get(), heroDocRef.get(), promosDocRef.get(), categoriesDocRef.get(), productsColRef.get()
+        ]);
+        if(mainSnap.exists && mainSnap.data().value){
+          const obj = JSON.parse(mainSnap.data().value);
+          obj.products = prodSnap.docs.map(d=>d.data());
+          if(heroSnap.exists && heroSnap.data().value) obj.hero = JSON.parse(heroSnap.data().value);
+          if(promosSnap.exists && promosSnap.data().value) obj.promos = JSON.parse(promosSnap.data().value);
+          if(catSnap.exists && catSnap.data().value) obj.categories = JSON.parse(catSnap.data().value);
+          return { key, value: JSON.stringify(obj), shared };
+        }
+      } else {
+        const snap = await storeDocRef.get();
+        if(snap.exists){
+          const val = snap.data().value;
+          if(val) return { key, value:val, shared };
+        }
       }
     }catch(e){ console.error('Firestore okuma hatası', e); }
   }
@@ -669,7 +705,43 @@ async function storageSet(key, value, shared){
   if(shared && firebaseReady && storeDocRef){
     try{
       await firebaseAuthReadyPromise;
-      await storeDocRef.set({ value: value, updatedAt: Date.now() });
+      if(key === STORAGE_KEY && productsColRef){
+        // Katalog verisini böl: ürünler kendi küçük dokümanlarına (her ürün için 1
+        // doküman), hero/promo/kategori her biri kendi küçük dokümanına, geri kalanı
+        // (siparişler HARİÇ — onlar zaten ayrı koleksiyonda) ana dokümana yazılır.
+        // Böylece kaç ürün/fotoğraf olursa olsun, tek bir doküman asla Firestore'un
+        // 1MB sınırına yaklaşmaz.
+        const obj = JSON.parse(value);
+        const products = obj.products || [];
+        const hero = obj.hero;
+        const promos = obj.promos;
+        const categories = obj.categories;
+        const rest = Object.assign({}, obj);
+        delete rest.products; delete rest.orders; delete rest.hero; delete rest.promos; delete rest.categories;
+        await Promise.all([
+          storeDocRef.set({ value: JSON.stringify(rest), updatedAt: Date.now() }),
+          heroDocRef.set({ value: JSON.stringify(hero||{}), updatedAt: Date.now() }),
+          promosDocRef.set({ value: JSON.stringify(promos||[]), updatedAt: Date.now() }),
+          categoriesDocRef.set({ value: JSON.stringify(categories||[]), updatedAt: Date.now() })
+        ]);
+        const db = firebase.firestore();
+        const existingSnap = await productsColRef.get();
+        const existingIds = new Set(existingSnap.docs.map(d=>d.id));
+        const currentIds = new Set(products.map(p=>String(p.id)));
+        let batch = db.batch();
+        let opCount = 0;
+        for(const p of products){
+          batch.set(productsColRef.doc(String(p.id)), p);
+          opCount++;
+          if(opCount>=400){ await batch.commit(); batch = db.batch(); opCount=0; }
+        }
+        for(const id of existingIds){
+          if(!currentIds.has(id)){ batch.delete(productsColRef.doc(id)); opCount++; if(opCount>=400){ await batch.commit(); batch = db.batch(); opCount=0; } }
+        }
+        if(opCount>0) await batch.commit();
+      } else {
+        await storeDocRef.set({ value: value, updatedAt: Date.now() });
+      }
       ok = true;
     }catch(e){ console.error('Firestore yazma hatası', e); }
   }
@@ -760,13 +832,10 @@ async function loadData(){
 async function saveData(){
   try{
     const json = JSON.stringify(DATA);
-    if(json.length > 950000){
-      showToast('⚠️ Veri çok büyük (muhtemelen eski, yerel olarak yüklenmiş fotoğraflar var). Ayarlar > ilgili fotoğrafları yeniden yükleyip kaydedin.');
-    }
     const result = await storageSet(STORAGE_KEY, json, true);
     if(!result){ showToast('Kaydetme başarısız oldu, tekrar deneyin'); }
   }
-  catch(e){ console.error('save failed', e); showToast('Kaydetme hatası: veri çok büyük olabilir'); }
+  catch(e){ console.error('save failed', e); showToast('Kaydetme hatası'); }
 }
 async function saveCart(){
   try{ await storageSet(CART_KEY, JSON.stringify(CART), false); }catch(e){ console.error('cart save failed', e); }
@@ -850,7 +919,11 @@ function onCardTiltLeave(e){
 /* Hedef: ~1MB'a kadar dosya boyutuna izin ver, çözünürlüğü olabildiğince yüksek tut.
    Önce büyük boyutta (maxDim'e göre) yüksek kalitede sıkıştırır, 1MB'ı aşarsa
    kaliteyi kademeli düşürerek hedefe yaklaşır; kalite dibe vurursa boyutu küçültür. */
-const IMG_TARGET_BYTES = 1024 * 1024; // 1MB (data URL boyutu, base64 dahil)
+const IMG_TARGET_BYTES = 260 * 1024; // ~260KB (data URL boyutu, base64 dahil) — Firestore'a
+// yerel yedek olarak gömülen fotoğrafların, birden fazla görsel bir arada olsa bile
+// dokümanı şişirmemesi için düşük tutulur. Firebase Storage/Vercel Blob'a başarıyla
+// yüklenen fotoğraflar bu sınırdan etkilenmez (gerçek dosya, sadece küçük bir bağlantı
+// Firestore'a kaydedilir).
 
 function dataUrlBytes(dataUrl){
   // base64 kısmının yaklaşık byte karşılığı

@@ -893,6 +893,7 @@ function normalizeData(){
   if(!DATA.customers) DATA.customers=[];
   if(DATA.currency !== 'TRY' && DATA.currency !== 'USD') DATA.currency = 'TRY';
   if(!DATA.usdRate || isNaN(DATA.usdRate) || DATA.usdRate <= 0) DATA.usdRate = 44.5;
+  if(DATA.announcementEnabled === undefined) DATA.announcementEnabled = true;
 }
 function init(){
   // Anında açılış: önce (varsa) yerel önbellekten çiz, ağ isteğini beklemeden.
@@ -1346,7 +1347,7 @@ function logoMarkup(size){
 function headerHtml(){
   const cc = cartCount();
   return `
-  <div class="announce"><div class="announce-track"><span>${esc(DATA.announcement)}</span><span>${esc(DATA.announcement)}</span></div></div>
+  ${DATA.announcementEnabled !== false ? `<div class="announce"><div class="announce-track"><span>${esc(DATA.announcement)}</span><span>${esc(DATA.announcement)}</span></div></div>` : ''}
   <header class="site">
     <div class="header-row">
       <div class="logo" onclick="goHome()">
@@ -2585,6 +2586,11 @@ function adminSettings(){
     <h3>Site Ayarları</h3>
     <label>Site Adı</label><input type="text" id="s-name" value="${esc(DATA.siteName)}">
     <label>Duyuru Bandı Metni</label><input type="text" id="s-announce" value="${esc(DATA.announcement)}">
+    <label style="display:flex; align-items:center; gap:10px; margin-top:14px; cursor:pointer;">
+      <input type="checkbox" id="s-announce-enabled" ${DATA.announcementEnabled !== false ? 'checked' : ''} style="width:18px; height:18px; cursor:pointer;">
+      <span>Mavi duyuru bandını sitede göster</span>
+    </label>
+    <div class="hint" style="margin-top:6px;">Kapatırsanız üstteki mavi kayan yazı şeridi sitede hiç görünmez, metin silinmez — istediğiniz an tekrar açabilirsiniz.</div>
     <button class="btn" style="margin-top:18px;" onclick="saveSettings()">Kaydet</button>
   </div>
   <div class="panel">
@@ -2641,6 +2647,7 @@ function saveCurrency(){
 function saveSettings(){
   DATA.siteName = document.getElementById('s-name').value;
   DATA.announcement = document.getElementById('s-announce').value;
+  DATA.announcementEnabled = document.getElementById('s-announce-enabled').checked;
   saveData(); render(); showToast('Ayarlar kaydedildi');
 }
 async function resetAll(){

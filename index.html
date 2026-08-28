@@ -528,7 +528,16 @@ async function enableNotifications(){
   NOTIF.lastOrderId = latest;
   localStorage.setItem('kdr-notif-last-order', latest || '');
   try{ new Notification('Bildirimler etkinleştirildi', { body:'Yeni siparişlerde bu tarayıcıda bildirim alacaksınız.' }); }catch(e){}
+  // ÖNEMLİ DÜZELTME: burada yanlışlıkla sadece startOrderWatcher() (katalog/ürün
+  // değişikliklerini dinleyen fonksiyon — adı yanıltıcı ama SİPARİŞLERİ dinlemiyor)
+  // çağrılıyordu. Asıl yeni siparişleri dinleyip bildirim tetikleyen dinleyici
+  // startOrdersColWatcher() idi ve bu satırda hiç çağrılmıyordu. Sayfa ilk açıldığında
+  // (loadData içinde) ikisi de zaten başlatılıyor olsa da, dinleyici herhangi bir
+  // sebeple (hata, bağlantı kopması) durmuşsa "Bildirimleri Aç" butonuna basmak onu
+  // yeniden BAŞLATMIYORDU — bu da "izin verdim ama bildirim hiç gelmiyor" sorununa
+  // yol açıyordu. Şimdi ikisi de burada yeniden başlatılıyor.
   startOrderWatcher();
+  startOrdersColWatcher();
   render();
   showToast('Bildirimler bu tarayıcıda açıldı');
 }
@@ -537,6 +546,14 @@ function disableNotifications(){
   localStorage.setItem('kdr-notif-enabled','0');
   render();
   showToast('Bildirimler bu tarayıcıda kapatıldı');
+}
+function sendTestNotification(){
+  if(!notifSupported() || Notification.permission!=='granted'){ showToast('Önce bildirimleri etkinleştirin'); return; }
+  try{
+    const n = new Notification('🔔 Test Bildirimi', { body: 'Bildirimler bu tarayıcıda düzgün çalışıyor!' });
+    n.onclick = function(){ window.focus(); };
+    showToast('Test bildirimi gönderildi — görmediyseniz tarayıcı/işletim sistemi ayarlarını kontrol edin');
+  }catch(e){ showToast('Test bildirimi gönderilemedi: ' + e.message); }
 }
 function fireOrderNotification(order){
   if(!notifSupported() || Notification.permission!=='granted') return;
@@ -2085,7 +2102,13 @@ function openAdminLogin(){ ADMIN.open=true; ADMIN.authed=false; ADMIN.sidebarOpe
 function closeAdmin(){ ADMIN.open=false; ADMIN.sidebarOpen=false; render(); }
 function tryLogin(){
   const val = document.getElementById('admin-pass-input').value;
-  if(val === ADMIN_PASS){ ADMIN.authed=true; ADMIN.tab='genel'; ADMIN.editingProduct=null; render(); }
+  if(val === ADMIN_PASS){
+    ADMIN.authed=true; ADMIN.tab='genel'; ADMIN.editingProduct=null; render();
+    // Ek güvence: admin girişi yapıldığında sipariş dinleyicisinin çalıştığından emin
+    // olmak için burada da (yeniden) başlatıyoruz — bağlantı daha önce herhangi bir
+    // sebeple kopmuşsa (ağ hatası vb.), admin panelini her açtığında kendini onarır.
+    if(NOTIF.enabled) startOrdersColWatcher();
+  }
   else { document.getElementById('admin-err').textContent = 'Hatalı şifre. Tekrar deneyin.'; }
 }
 
@@ -2771,7 +2794,11 @@ function adminSettings(){
     <div class="hint" style="margin-top:8px;">Önemli: İzin ve "açık/kapalı" durumu sadece kullandığınız tarayıcıya kayıtlıdır. Bildirimleri hem Chrome'da hem Firefox'ta almak istiyorsanız her ikisinde de ayrı ayrı "Etkinleştir" butonuna basmanız gerekir. Ayrıca bildirimlerin gelebilmesi için site o tarayıcıda bir sekmede açık kalmalı (simge durumuna küçültülmüş/arka planda olabilir, ama tarayıcı tamamen kapalıyken bildirim gelmez).</div>
     <p style="margin-top:12px; font-size:13px; font-weight:600;">${notifStatusLabel()}</p>
     ${NOTIF.enabled && notifSupported() && Notification.permission==='granted'
-      ? `<button class="btn danger-outline" style="margin-top:14px;" onclick="disableNotifications()">Bildirimleri Kapat</button>`
+      ? `<div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:14px;">
+           <button class="btn danger-outline" onclick="disableNotifications()">Bildirimleri Kapat</button>
+           <button class="btn outline" onclick="sendTestNotification()">🔔 Test Bildirimi Gönder</button>
+         </div>
+         <div class="hint" style="margin-top:8px;">Test bildirimi gelmiyorsa sorun bu sitede değil, tarayıcınızın veya işletim sisteminizin (Windows/macOS) bildirim ayarlarındadır — bu sitenin bildirim izni engellenmiş ya da "Rahatsız Etmeyin" modu açık olabilir.</div>`
       : `<button class="btn" style="margin-top:14px;" onclick="enableNotifications()">🔔 Bildirimleri Etkinleştir</button>`}
   </div>
   <div class="panel">
